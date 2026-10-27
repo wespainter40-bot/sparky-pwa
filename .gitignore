@@ -1,0 +1,7 @@
+node_modules/
+.env
+.admin_token
+data/sessions/*
+!data/sessions/.gitkeep
+server.log
+preview*.png

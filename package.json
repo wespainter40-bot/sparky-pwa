@@ -1,0 +1,13 @@
+{
+  "name": "sparky",
+  "version": "1.0.0",
+  "description": "Sparky - a free, kid-friendly PWA chat assistant with a glowing energy core",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "icons": "python3 scripts/make_icons.py"
+  }
+}

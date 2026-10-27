@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: sparky-pwa
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: ADMIN_TOKEN
+        sync: false
