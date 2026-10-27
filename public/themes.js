@@ -1,5 +1,6 @@
 // Theme (dark / OLED / light) + accent colour. Persisted per device; recolours the UI through CSS variables and the orb through orb.setAccent().
 import { load, save } from './store.js';
+import * as Night from './night.js';
 export const KEY = 'sparky.theme.v1';
 export const MODES = {
   dark: { label: 'Dark', meta: '#07090a' },
@@ -24,8 +25,9 @@ export function current() {
 }
 /** apply to the page; orb is optional (set after it exists) */
 export function apply(t, orb) {
-  const a = ACCENTS[t.accent], root = document.documentElement, light = t.mode === 'light';
-  root.dataset.theme = t.mode; root.dataset.accent = t.accent;
+  const a = ACCENTS[t.accent], root = document.documentElement, light = t.mode === 'light' && !Night.active();
+  const night = Night.active();   // night light overrides every theme and accent (the saved choice is untouched)
+  root.dataset.theme = night ? 'night' : t.mode; root.dataset.accent = t.accent; root.dataset.night = night ? '1' : '0';
   root.style.setProperty('--ac', a.rgb);
   root.style.setProperty('--ac2', light ? hexToRgb(a.deep) : a.liteRgb);
   root.style.setProperty('--green', light ? a.deep : a.hex);
@@ -33,8 +35,8 @@ export function apply(t, orb) {
   root.style.setProperty('--green-d', darkDeep[t.accent]);
   let m = document.querySelector('meta[name="theme-color"]');
   if (!m) { m = document.createElement('meta'); m.name = 'theme-color'; document.head.append(m); }
-  m.content = MODES[t.mode].meta;
-  if (orb) orb.setAccent(t.accent);
+  m.content = night ? Night.META : MODES[t.mode].meta;
+  if (orb) { orb.setAccent(night ? 'night' : t.accent); orb.setNight(night); }
 }
 export function set(patch, orb) {
   const t = { ...current(), ...patch };

@@ -102,8 +102,10 @@ function localReply(userText) {
  * Falls through the chain until one provider produces output.
  */
 export async function* streamReply(messages) {
+  let tried = 0;
   for (const p of chain) {
     let started = false;
+    if (tried++) yield { type: 'status', stage: 'fallback', provider: p.name }; // previous provider failed: trying the next one
     try {
       for await (const text of p.stream(messages)) {
         if (!started) { started = true; yield { type: 'meta', provider: p.name, model: p.model }; }
@@ -116,6 +118,7 @@ export async function* streamReply(messages) {
     }
   }
   const last = [...messages].reverse().find((m) => m.role === 'user');
+  yield { type: 'status', stage: 'fallback', provider: 'local' };
   yield { type: 'meta', provider: 'local' };
   yield { type: 'token', text: localReply(last?.content || '') };
 }

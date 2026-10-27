@@ -20,9 +20,9 @@ const FLOOR = -1.30;   // ground plane height under the core, in core radii
 
 // ---------- accent palette: the emerald art is rotated in hue (luminance preserving, same math as the shader's uHue) ----------
 let HM = [1, 0, 0, 0, 1, 0, 0, 0, 1];            // row-major 3x3
-export const ACCENT_HUE = { emerald: 0, blue: 84, violet: 125, orange: -112, pink: -170 };
-const ACCENT_GAIN = { emerald: 1, blue: 1.45, violet: 1.45, orange: 1.08, pink: 1.2 };   // blue/violet read darker than green at the same luminance
-export const ACCENT_LITE = { emerald: [.62, 1, .30], blue: [.30, .85, 1], violet: [.82, .55, 1], orange: [1, .80, .22], pink: [1, .52, .78] };
+export const ACCENT_HUE = { emerald: 0, blue: 84, violet: 125, orange: -112, pink: -170, night: -128 };   // 'night' = the dim amber/red night light palette (not user selectable)
+const ACCENT_GAIN = { emerald: 1, blue: 1.45, violet: 1.45, orange: 1.08, pink: 1.2, night: 0.8 };   // blue/violet read darker than green at the same luminance
+export const ACCENT_LITE = { emerald: [.62, 1, .30], blue: [.30, .85, 1], violet: [.82, .55, 1], orange: [1, .80, .22], pink: [1, .52, .78], night: [1, .5, .18] };
 function hueMatrix(deg) {
   const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
   return [
@@ -300,6 +300,7 @@ export class Orb {
     ];
     this.bolts = []; this.parts = []; this.waves = [];
     this.setAccent(extra.accent || 'emerald');
+    this.nightK = 0; this.nightT = 0;
     this.state = 'ready'; this.energy = 0.3; this.swirl = 0.4; this.ringSpeed = 0.25;
     this.phase = 0; this.breathe = 0; this.t = 0; this.last = 0; this.acc = 0; this.boltT = 1.2; this.rippleT = 0;
     this.flash = 0; this.kick = 0; this.press = 0; this.level = 0; this.levelT = 0; this.levelTarget = 0; this.levelProvider = null; this.waveT = 0;
@@ -366,6 +367,8 @@ export class Orb {
   }
 
   setState(s) { this.state = STATES[s] ? s : 'ready'; }
+  /** night light: softer, slower, dimmer; the factor eases in/out so the change is smooth */
+  setNight(on) { this.nightT = on ? 1 : 0; }
   /** Real mic level provider: () => 0..1, or null for the simulated level. */
   setLevelProvider(fn) { this.levelProvider = fn || null; }
 
@@ -525,11 +528,13 @@ export class Orb {
     this.last = now; this.t += dt;
     this.adapt(dt);
     const cfg = STATES[this.state], k = Math.min(1, dt * 2.5);
-    this.energy += (cfg.energy - this.energy) * k;
-    this.swirl += (cfg.swirl - this.swirl) * k;
-    this.ringSpeed += (cfg.ring - this.ringSpeed) * k;
-    this.amp = (this.amp ?? cfg.amp); this.amp += (cfg.amp - this.amp) * k;
-    this.bre = (this.bre ?? cfg.breathe); this.bre += (cfg.breathe - this.bre) * k;
+    const nk = this.nightK += (this.nightT - this.nightK) * Math.min(1, dt * 1.6);   // 0 = day, 1 = night light
+    const slow = 1 - 0.5 * nk;                                                        // night: slower, softer pulse and swirl
+    this.energy += (cfg.energy * (1 - 0.38 * nk) - this.energy) * k;
+    this.swirl += (cfg.swirl * slow - this.swirl) * k;
+    this.ringSpeed += (cfg.ring * slow - this.ringSpeed) * k;
+    this.amp = (this.amp ?? cfg.amp); this.amp += (cfg.amp * (1 - 0.5 * nk) - this.amp) * k;
+    this.bre = (this.bre ?? cfg.breathe); this.bre += (cfg.breathe * slow - this.bre) * k;
     this.phase += this.swirl * dt;
     this.breathe += this.bre * dt;
     this.flash *= Math.exp(-dt * 7);
@@ -579,7 +584,7 @@ export class Orb {
     const P = this.amp * pulse + this.kick * 0.07 - this.press * 0.025;
 
     // ambient sparks
-    this.acc += dt * (cfg.rate + this.level * 14);
+    this.acc += dt * (cfg.rate + this.level * 14) * (1 - 0.72 * nk);      // night: far fewer sparks
     while (this.acc >= 1) {
       this.acc -= 1;
       this.emit(Math.random() < cfg.streak ? 'streak' : 'ember', rand(0, TAU), 0.8 + e * 0.5);
@@ -588,7 +593,7 @@ export class Orb {
     this.boltT -= dt;
     if (this.boltT <= 0) {
       this.boltT = cfg.bolt * rand(0.6, 1.4);
-      if (this.bolts.length < 3) this.makeBolt(e);
+      if (this.bolts.length < 3 && nk < 0.5) this.makeBolt(e);   // night: lightning off
     }
     // ripples: speaking has a steady cadence; listening is driven by the mic level (peaks make bigger rings)
     this.waveT -= dt;

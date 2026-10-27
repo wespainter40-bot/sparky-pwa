@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { streamReply, providerNames } from './src/providers.js';
-import { lookup } from './src/search.js';
+import { lookup, looksLikeLookup } from './src/search.js';
 import { buildMessages } from './src/prompt.js';
 import * as sessions from './src/sessions.js';
 import * as drive from './src/drive.js';
@@ -69,12 +69,21 @@ async function handleChat(req, res) {
   if (streaming) res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
   const emit = (event, data) => streaming && res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-  const facts = await lookup(message);
+  // real stage updates for the client's playful "narration" (cosmetic; old clients just ignore the event)
+  emit('status', { stage: 'received' });
+  let facts = null;
+  if (looksLikeLookup(message)) {
+    emit('status', { stage: 'lookup' });
+    facts = await lookup(message);
+    emit('status', { stage: facts ? 'found' : 'nolookup', source: facts?.source });
+  }
+  emit('status', { stage: 'thinking' });
   let reply = '', provider = 'local', aborted = false;
   res.on('close', () => { if (!res.writableEnded) aborted = true; });
 
   for await (const ev of streamReply(buildMessages(history, message, facts, body.memory))) {
-    if (ev.type === 'meta') {
+    if (ev.type === 'status') emit('status', { stage: ev.stage, provider: ev.provider });
+    else if (ev.type === 'meta') {
       provider = ev.provider;
       emit('meta', { provider, search: facts ? { source: facts.source, title: facts.title, url: facts.url } : null });
     } else {

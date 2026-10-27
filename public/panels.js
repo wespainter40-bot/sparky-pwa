@@ -3,6 +3,9 @@ import * as V from './voice.js';
 import * as T from './themes.js';
 import * as M from './memory.js';
 import * as H from './history.js';
+import * as N from './night.js';
+import * as Nar from './narrate.js';
+import * as Tp from './topics.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, attrs = {}, ...kids) => {
@@ -93,6 +96,26 @@ export function initSettings(ctx) {
     }, el('span', { class: 'sw-name' }, a.label))));
   }
 
+  // night light + narration
+  const sw = (btn, on) => btn.setAttribute('aria-checked', String(on));
+  const nf = $('#nightFrom'), nt = $('#nightTo');
+  for (const s of [nf, nt]) for (let h = 0; h < 24; h++) s.append(el('option', { value: String(h) }, N.hourLabel(h)));
+  function paintNight() {
+    const s = N.settings();
+    sw($('#nightToggle'), N.active()); sw($('#nightAuto'), s.auto);
+    nf.value = String(s.from); nt.value = String(s.to);
+    $('#nightAutoSub').textContent = `Every day from ${N.hourLabel(s.from)} to ${N.hourLabel(s.to)}`;
+    nf.disabled = nt.disabled = !s.auto;
+  }
+  $('#nightToggle').addEventListener('click', () => { ctx.toggleNight(); paintNight(); });
+  $('#nightAuto').addEventListener('click', () => { ctx.setNight({ auto: !N.settings().auto }); paintNight(); });
+  nf.addEventListener('change', () => { ctx.setNight({ from: +nf.value }); paintNight(); });
+  nt.addEventListener('change', () => { ctx.setNight({ to: +nt.value }); paintNight(); });
+  ctx.refreshNight = paintNight;
+  function paintNarr() { const s = Nar.settings(); sw($('#narrToggle'), s.on); sw($('#narrSpeak'), s.on && s.speak); $('#narrSpeak').disabled = !s.on; }
+  $('#narrToggle').addEventListener('click', () => { Nar.set({ on: !Nar.settings().on }); paintNarr(); ctx.narrationChanged(); });
+  $('#narrSpeak').addEventListener('click', () => { Nar.set({ speak: !Nar.settings().speak }); paintNarr(); });
+
   // hands-free
   const wakeBtn = $('#wakeToggle');
   function paintWake(status = ctx.wake.status, detail) {
@@ -136,21 +159,42 @@ export function initSettings(ctx) {
     inp.value = ''; paintMem(); ctx.memoryChanged();
   });
 
+  // favorite topics
+  const tList = $('#topicList');
+  const iconBtn = (cls, label, d, on, fn) => {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24');
+    const pa = document.createElementNS('http://www.w3.org/2000/svg', 'path'); pa.setAttribute('d', d); s.append(pa);
+    return el('button', { type: 'button', class: `icon-btn mini ${cls}${on ? ' on' : ''}`, 'aria-label': label, 'aria-pressed': String(!!on), title: label, onclick: fn }, s);
+  };
+  function paintTopics() {
+    const items = Tp.list();
+    if (!items.length) { tList.replaceChildren(el('li', { class: 'mem-empty' }, 'No favorites yet. Chat with Sparky and the things you ask about most will show up here.')); return; }
+    tList.replaceChildren(...items.slice(0, 20).map((x) => {
+      const inp = el('input', { type: 'text', maxlength: '30', value: x.t, class: 'mem-in', 'aria-label': `Topic: ${x.t}` });
+      inp.addEventListener('change', () => { if (!Tp.rename(x.t, inp.value) && inp.value.trim() && inp.value !== x.t) ctx.toast('Short words only, please.'); paintTopics(); ctx.memoryChanged(); });
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
+      return el('li', { class: 'mem-row topic' + (x.hidden ? ' hid' : ''), 'data-topic': x.t }, inp, el('span', { class: 'topic-count', title: 'times mentioned' }, `${x.n}x`),
+        iconBtn('pin', x.pinned ? 'Unpin' : 'Pin this topic', 'M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9L3.5 9.7l5.9-.8L12 3.5z', x.pinned, () => { Tp.toggle(x.t, 'pinned'); paintTopics(); ctx.memoryChanged(); }),
+        iconBtn('hide', x.hidden ? 'Show this topic again' : 'Hide this topic', x.hidden ? 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12zM12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6z' : 'M3 3l18 18M10.6 6a9 9 0 0 1 1.4-.1c6 0 9.5 6.1 9.5 6.1a16 16 0 0 1-3.1 3.8M6.6 7.7A16 16 0 0 0 2.5 12S6 18.5 12 18.5c1.5 0 2.8-.4 4-.9', x.hidden, () => { Tp.toggle(x.t, 'hidden'); paintTopics(); ctx.memoryChanged(); }),
+        el('button', { type: 'button', class: 'icon-btn mini', 'aria-label': 'Remove topic', title: 'Remove topic', onclick: () => { Tp.remove(x.t); paintTopics(); ctx.memoryChanged(); } }, trash()));
+    }));
+  }
+
   // confirm bar (no browser popups)
   const cbar = $('#settingsConfirm');
   let pending = null;
   const ask = (msg, fn) => { pending = fn; $('#settingsConfirmMsg').textContent = msg; cbar.hidden = false; $('#settingsConfirmNo').focus(); };
   $('#settingsConfirmYes').addEventListener('click', () => { cbar.hidden = true; pending?.(); pending = null; });
   $('#settingsConfirmNo').addEventListener('click', () => { cbar.hidden = true; pending = null; });
-  $('#memForget').addEventListener('click', () => ask('Forget everything Sparky knows about you?', () => { M.forgetAll(); paintMem(); ctx.memoryChanged(); ctx.toast('All forgotten'); }));
+  $('#memForget').addEventListener('click', () => ask('Forget everything Sparky knows about you?', () => { M.forgetAll(); Tp.forgetAll(); paintMem(); paintTopics(); ctx.memoryChanged(); ctx.toast('All forgotten'); }));
   $('#exportBtn').addEventListener('click', () => { dlg.close(); ctx.openExport(); });
   dlg.addEventListener('close', () => { cbar.hidden = true; pending = null; });
 
   $('#settingsBtn').addEventListener('click', () => {
-    vs = ctx.voiceSettings(); paintSliders(); paintPersonas(); paintVoices(); paintLook(); paintWake(); paintMem();
+    vs = ctx.voiceSettings(); paintSliders(); paintPersonas(); paintVoices(); paintLook(); paintNight(); paintNarr(); paintWake(); paintMem(); paintTopics();
     openDlg(dlg);
   });
-  ctx.refreshSettings = () => { vs = ctx.voiceSettings(); paintSliders(); paintPersonas(); paintVoices(); paintMem(); };
+  ctx.refreshSettings = () => { vs = ctx.voiceSettings(); paintSliders(); paintPersonas(); paintVoices(); paintMem(); paintTopics(); };
 }
 const trash = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', 'M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12M10.5 11v5M13.5 11v5'); s.append(p); return s; };
 

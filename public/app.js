@@ -5,11 +5,14 @@ import * as Hist from '/history.js';
 import * as Voice from '/voice.js';
 import { Wake, chime, isOn as wakeWasOn } from '/wake.js';
 import { Listener } from '/listen.js';
+import * as Night from '/night.js';
+import * as Narr from '/narrate.js';
+import * as Topics from '/topics.js';
 import { initSettings, initHistory } from '/panels.js';
 
 const $ = (s) => document.querySelector(s);
 const orb = new Orb($('#core'), $('#plasma'), { back: $('#back'), dust: $('#dust'), accent: Theme.current().accent });
-Theme.apply(Theme.current());
+Theme.apply(Theme.current(), orb);
 const synth = 'speechSynthesis' in window ? window.speechSynthesis : null;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -124,6 +127,7 @@ function applyVoice(u) {
   const v = voices.resolve(voiceSettings);
   if (v) { u.voice = v; u.lang = v.lang; }
   u.rate = voiceSettings.rate; u.pitch = voiceSettings.pitch;
+  u.volume = Night.active() ? Night.VOLUME : 1;   // night light: a bit quieter
 }
 function speak(text, { force = false } = {}) {
   const clean = text.replace(/\p{Extended_Pictographic}/gu, '').replace(/[*_#`>]/g, '').trim();
@@ -159,6 +163,36 @@ function makeSpeaker() {
   };
 }
 
+// ---------- narration (playful status lines driven by the real request stages) ----------
+let narrSpeaking = false;
+const narrator = new Narr.Narrator({
+  settings: Narr.settings,
+  show(text) {
+    const t = $('#ticker');
+    if (!text) { clearTimeout(show_t); t.classList.remove('show', 'swap'); return; }
+    if (t.textContent === text && t.classList.contains('show')) return;
+    t.classList.add('swap');
+    clearTimeout(show_t);
+    show_t = setTimeout(() => { t.textContent = text; t.classList.remove('swap'); t.classList.add('show'); }, t.classList.contains('show') ? 140 : 0);
+  },
+  speak(text) {
+    if (!synth || muted || pendingSpeech > 0) return;
+    const u = new SpeechSynthesisUtterance(text);
+    applyVoice(u); u.volume *= 0.85; narrSpeaking = true;
+    u.onend = u.onerror = () => { narrSpeaking = false; };
+    synth.speak(u);     // deliberately outside pendingSpeech: it must never hold up or block the real reply
+  },
+  cancelSpoken() { if (narrSpeaking) { narrSpeaking = false; try { synth.cancel(); } catch { /* ignore */ } } },
+});
+let show_t = 0;
+
+/** what we send along with each chat: remembered facts + the top 3 favorite topics (the server validates and limits it again) */
+function memoryPayload() {
+  const m = Mem.payload(), tp = Topics.payload(3);
+  if (!m && !tp.length) return null;
+  return { name: m?.name || '', items: m?.items || [], topics: tp };
+}
+
 // ---------- chat ----------
 async function send(text, source = 'text', cardEl = null) {
   text = text.trim();
@@ -166,6 +200,8 @@ async function send(text, source = 'text', cardEl = null) {
   micCard = null; stopListening();
   cancelSpeech();
   busy = true;
+  hideSuggest();
+  Topics.learn(text, [Mem.get().name, 'sparky']);
   const learned = Mem.learn(text);
   if (learned.name) { toast(`Nice to meet you, ${learned.name}! I'll remember that.`); settingsCtx.refreshSettings?.(); }
   else if (learned.added.length) { toast(`Got it! I'll remember: ${learned.added[0]}`); settingsCtx.refreshSettings?.(); }
@@ -177,11 +213,12 @@ async function send(text, source = 'text', cardEl = null) {
   card.classList.add('typing');
   const speaker = makeSpeaker();
   let reply = '';
+  narrator.start();
   try {
     const ctl = new AbortController(), kill = setTimeout(() => ctl.abort(), 90000); // never stay in 'thinking' forever
     const res = await fetch('/api/chat', {
       signal: ctl.signal, method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId, message: text, source, memory: Mem.payload() }),
+      body: JSON.stringify({ sessionId, message: text, source, memory: memoryPayload() }),
     });
     if (!res.ok) throw new Error(res.status === 429 ? 'slow' : 'http');
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -194,9 +231,10 @@ async function send(text, source = 'text', cardEl = null) {
       while ((i = buf.indexOf('\n\n')) >= 0) {
         const block = buf.slice(0, i); buf = buf.slice(i + 2);
         const ev = /event: (\w+)/.exec(block)?.[1], data = /data: (.*)/.exec(block)?.[1];
+        if (ev === 'status' && data) { try { narrator.stage(JSON.parse(data).stage); } catch { /* ignore */ } continue; }
         if (ev !== 'token' || !data) continue;
         const t = JSON.parse(data).t;
-        if (!reply) { orb.burst(22); orb.shockwave(1); } // reply arriving: shockwave
+        if (!reply) { orb.burst(22); orb.shockwave(1); narrator.token(); } // reply arriving: shockwave
         reply += t;
         card.textContent = reply;
         above.scrollTop = above.scrollHeight; card.scrollTop = card.scrollHeight;
@@ -210,6 +248,7 @@ async function send(text, source = 'text', cardEl = null) {
     card.textContent = reply;
     speaker.flush(); if (!muted && !pendingSpeech) speak(reply);
   }
+  narrator.stop();
   card.classList.remove('typing');
   if (reply) Hist.add(sessionId, 'sparky', reply);
   busy = false;
@@ -381,6 +420,33 @@ $('#newChat').addEventListener('click', () => {
   above.replaceChildren(); below.replaceChildren(); $('#input').value = ''; dlg.close(); greet();
 });
 
+// ---------- night light ----------
+function applyNight() {
+  Theme.apply(Theme.current(), orb);
+  $('#nightBtn').setAttribute('aria-pressed', String(Night.active()));
+  settingsCtx.refreshNight?.();
+}
+function toggleNight() {
+  const s = Night.settings();
+  if (Night.active() && !s.on) { Night.set({ auto: false }); toast('Automatic night light turned off'); }   // it is on only because of the schedule
+  else Night.set({ on: !s.on });
+  applyNight();
+}
+$('#nightBtn').addEventListener('click', toggleNight);
+let nightWas = Night.active();
+setInterval(() => { const a = Night.active(); if (a !== nightWas) { nightWas = a; applyNight(); } }, 30000);   // the schedule
+
+// ---------- favorite-topic suggestion (a tappable chip, never sent by itself) ----------
+let suggestion = null;
+function hideSuggest() { $('#suggest').hidden = true; suggestion = null; document.body.dataset.suggest = '0'; }
+function showSuggest() {
+  const sg = Topics.suggestion();
+  if (!sg || busy) { hideSuggest(); return; }
+  suggestion = sg; $('#suggestText').textContent = sg.text; $('#suggest').hidden = false; document.body.dataset.suggest = '1';
+}
+$('#suggestGo').addEventListener('click', () => { const sg = suggestion; hideSuggest(); if (sg && !busy) send(sg.send, 'text'); });
+$('#suggestX').addEventListener('click', hideSuggest);
+
 // ---------- settings, history, theme, memory wiring ----------
 Object.assign(settingsCtx, {
   orb, voices, wake, toast, openExport,
@@ -388,7 +454,10 @@ Object.assign(settingsCtx, {
   setVoiceSettings: (v, reset) => { voiceSettings = v; if (!reset) Voice.saveSettings(v); },
   preview: previewVoice,
   setTheme: (patch) => Theme.set(patch, orb),
-  memoryChanged: () => {},
+  setNight: (patch) => { Night.set(patch); applyNight(); },
+  toggleNight,
+  narrationChanged: () => { if (!Narr.settings().on) narrator.stop(); },
+  memoryChanged: () => { if (Mem.isEmpty() && !Topics.hasData()) hideSuggest(); },
   continueChat: (id) => {
     const c = Hist.get(id); if (!c) return;
     cancelSpeech(); sessionId = id; localStorage.setItem('sparkySession', id);
@@ -396,7 +465,7 @@ Object.assign(settingsCtx, {
     const sp = c.msgs.filter((m) => m.r === 's').slice(-1), us = c.msgs.filter((m) => m.r === 'u').slice(-1);
     for (const m of c.msgs.slice(-4)) if ((m.r === 's' && sp.includes(m)) || (m.r === 'u' && us.includes(m))) addCard(m.r === 'u' ? 'user' : 'sparky', m.t);
     addCard('sparky', `Welcome back${Mem.get().name ? ', ' + Mem.get().name : ''}! Let's keep chatting.`);
-    orb.burst(12);
+    orb.burst(12); hideSuggest();
   },
 });
 initSettings(settingsCtx);
@@ -407,7 +476,10 @@ function greet() {
   const nm = Mem.get().name;
   addCard('sparky', `${nm ? `Hi ${nm}!` : 'Hi there!'} I'm Sparky. Tap my glowing core and ask me anything!`);
   orb.burst(12);
+  showSuggest();
 }
+Topics.backfill(Hist.all().flatMap((c) => c.msgs.filter((m) => m.r === 'u').map((m) => m.t)), [Mem.get().name, 'sparky']);
+applyNight();
 setMuted(muted);
 setState('ready');
 fetch('/api/config').then((r) => r.json()).then((c) => { config = c; }).catch(() => {}).finally(greet);
