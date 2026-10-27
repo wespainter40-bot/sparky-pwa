@@ -73,7 +73,7 @@ async function handleChat(req, res) {
   let reply = '', provider = 'local', aborted = false;
   res.on('close', () => { if (!res.writableEnded) aborted = true; });
 
-  for await (const ev of streamReply(buildMessages(history, message, facts))) {
+  for await (const ev of streamReply(buildMessages(history, message, facts, body.memory))) {
     if (ev.type === 'meta') {
       provider = ev.provider;
       emit('meta', { provider, search: facts ? { source: facts.source, title: facts.title, url: facts.url } : null });

@@ -1,7 +1,14 @@
 import { Orb } from '/orb.js';
+import * as Theme from '/themes.js';
+import * as Mem from '/memory.js';
+import * as Hist from '/history.js';
+import * as Voice from '/voice.js';
+import { Wake, chime, isOn as wakeWasOn } from '/wake.js';
+import { initSettings, initHistory } from '/panels.js';
 
 const $ = (s) => document.querySelector(s);
-const orb = new Orb($('#core'), $('#plasma'), { back: $('#back'), dust: $('#dust') });
+const orb = new Orb($('#core'), $('#plasma'), { back: $('#back'), dust: $('#dust'), accent: Theme.current().accent });
+Theme.apply(Theme.current());
 const synth = 'speechSynthesis' in window ? window.speechSynthesis : null;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -20,18 +27,46 @@ let pendingSpeech = 0;
 // ---------- status ----------
 const LABELS = { ready: 'Ready', listening: 'Listening', thinking: 'Thinking', speaking: 'Speaking' };
 let state = 'ready';
+const settingsCtx = { onWakeStatus: new Set() };
+
+// ---------- "Hey Sparky" hands-free wake word (opt-in) ----------
+const wake = new Wake({
+  SR,
+  canListen: () => state === 'ready' && !busy && !listening && pendingSpeech === 0 && !document.hidden,
+  onStatus: (st, detail) => {
+    paintStatus();
+    settingsCtx.onWakeStatus.forEach((f) => f(st, detail));
+    if (st === 'blocked') toast('Microphone is blocked, so Hey Sparky is off. Allow it in the browser, then turn it on again.', 5200);
+    else if (st === 'error') toast(detail || 'Hey Sparky stopped. You can turn it on again in Settings.', 5200);
+  },
+  onWake: (rest) => {
+    chime(); orb.burst(26); orb.shockwave(0.6);
+    if (rest && rest.length > 2) setTimeout(() => send(rest, 'voice'), 250);          // "Hey Sparky, what is the moon?" in one go
+    else setTimeout(() => { if (!busy && !listening) startListening(true); wake.sync(); }, 380);
+  },
+});
+document.addEventListener('visibilitychange', () => wake.sync());
 function setState(s) {
   state = s;
   orb.setState(s);
   document.body.dataset.state = s;
-  $('#statusText').textContent = LABELS[s];
   $('#micBtn').setAttribute('aria-pressed', String(s === 'listening'));
-  $('#hint').textContent = hintFor(s);
+  paintStatus();
+  wake.sync();
+}
+const wakeLive = () => wake.on && wake.status === 'listening' && state === 'ready';
+function paintStatus() {
+  const st = $('#statusText');
+  if (wakeLive()) { if (!st.querySelector('.say')) { const b = document.createElement('span'); b.className = 'say'; b.textContent = 'Say '; st.replaceChildren(b, 'Hey Sparky'); } }
+  else st.textContent = LABELS[state];
+  $('#hint').textContent = hintFor(state);
+  document.body.dataset.wake = wakeLive() ? '1' : '0';
 }
 function hintFor(s) {
   if (s === 'listening') return 'Listening... tap to stop';
   if (s === 'thinking') return 'Sparky is thinking...';
   if (s === 'speaking') return 'Tap to interrupt and talk';
+  if (wakeLive()) return 'Say "Hey Sparky" or tap the glow';
   return SR ? 'Tap the glow to talk' : 'Voice not supported here. Type below!';
 }
 function settle() { // pick the right resting state
@@ -77,23 +112,33 @@ function setMuted(m) {
   $('#muteBtn').setAttribute('aria-label', m ? "Unmute Sparky's voice" : "Mute Sparky's voice");
   if (m) cancelSpeech();
 }
-function cancelSpeech() { if (synth) synth.cancel(); pendingSpeech = 0; }
-function pickVoice() {
-  const lang = (navigator.language || 'en-US').slice(0, 2);
-  const voices = synth.getVoices().filter((v) => v.lang.startsWith(lang));
-  return voices.find((v) => /natural|google|samantha|aria|jenny/i.test(v.name)) || voices[0];
+let speechGen = 0; // utterances cancelled earlier must not touch the count of newer ones
+function cancelSpeech() { speechGen++; if (synth) synth.cancel(); pendingSpeech = 0; }
+// ---------- voice settings (picker) ----------
+const voices = new Voice.Voices(synth);
+let voiceSettings = Voice.loadSettings();
+function applyVoice(u) {
+  const v = voices.resolve(voiceSettings);
+  if (v) { u.voice = v; u.lang = v.lang; }
+  u.rate = voiceSettings.rate; u.pitch = voiceSettings.pitch;
 }
-function speak(text) {
+function speak(text, { force = false } = {}) {
   const clean = text.replace(/\p{Extended_Pictographic}/gu, '').replace(/[*_#`>]/g, '').trim();
-  if (!synth || muted || !clean) return;
+  if (!synth || (muted && !force) || !clean) return;
   const u = new SpeechSynthesisUtterance(clean);
-  const v = pickVoice(); if (v) u.voice = v;
-  u.rate = 1; u.pitch = 1.15;
+  applyVoice(u);
   pendingSpeech++;
-  const done = () => { pendingSpeech = Math.max(0, pendingSpeech - 1); if (!listening) settle(); };
+  let finished = false; const gen = speechGen;
+  const done = () => { if (finished || gen !== speechGen) return; finished = true; pendingSpeech = Math.max(0, pendingSpeech - 1); if (!listening) settle(); };
   u.onend = done; u.onerror = done;
   synth.speak(u);
   if (!busy && !listening) setState('speaking');
+}
+function previewVoice() {
+  if (!synth) return;
+  cancelSpeech();
+  speak("Hi, I'm Sparky!", { force: true });
+  orb.burst(8);
 }
 // speak as sentences arrive, so voice starts before the full reply is done
 function makeSpeaker() {
@@ -117,6 +162,10 @@ async function send(text, source = 'text') {
   stopListening();
   cancelSpeech();
   busy = true;
+  const learned = Mem.learn(text);
+  if (learned.name) { toast(`Nice to meet you, ${learned.name}! I'll remember that.`); settingsCtx.refreshSettings?.(); }
+  else if (learned.added.length) { toast(`Got it! I'll remember: ${learned.added[0]}`); settingsCtx.refreshSettings?.(); }
+  Hist.add(sessionId, 'user', text);
   addCard('user', text);
   orb.burst(18);
   setState('thinking');
@@ -127,7 +176,7 @@ async function send(text, source = 'text') {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId, message: text, source }),
+      body: JSON.stringify({ sessionId, message: text, source, memory: Mem.payload() }),
     });
     if (!res.ok) throw new Error(res.status === 429 ? 'slow' : 'http');
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -156,6 +205,7 @@ async function send(text, source = 'text') {
     speaker.flush(); if (!muted && !pendingSpeech) speak(reply);
   }
   card.classList.remove('typing');
+  if (reply) Hist.add(sessionId, 'sparky', reply);
   busy = false;
   settle();
 }
@@ -199,7 +249,7 @@ orb.onTilt = (x, y) => {
 };
 
 // ---------- voice input ----------
-function startListening() {
+function startListening(quiet = false) {
   if (!SR) { toast('Voice typing is not supported in this browser. Type to Sparky instead!'); $('#input').focus(); return; }
   cancelSpeech();
   recog = new SR();
@@ -217,7 +267,7 @@ function startListening() {
       return;
     }
     if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') toast('Microphone is blocked. Allow it in the browser, or type instead.');
-    else if (ev.error === 'no-speech') toast("I didn't hear anything. Tap and try again!");
+    else if (ev.error === 'no-speech') { if (!quiet) toast("I didn't hear anything. Tap and try again!"); }
     else if (ev.error !== 'aborted') toast('Voice did not work. You can type instead.');
   };
   recog.onend = () => {
@@ -280,12 +330,12 @@ async function download(url, name, admin) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   $('#dlgMsg').textContent = 'Saved!';
 }
-$('#exportBtn').addEventListener('click', async () => {
+async function openExport() {
   $('#dlgMsg').textContent = '';
   try { config = await (await fetch('/api/config')).json(); } catch { /* offline */ }
   $('#syncDrive').hidden = !config.drive?.enabled;
-  dlg.showModal();
-});
+  if (!dlg.open) dlg.showModal();
+}
 $('#dlgClose').addEventListener('click', () => dlg.close());
 $('#dlThis').addEventListener('click', () => download(`/api/my/${sessionId}.md`, `sparky-${sessionId.slice(0, 8)}.md`, false));
 $('#dlAll').addEventListener('click', () => download('/api/export.zip', 'sparky-sessions.zip', true));
@@ -296,17 +346,39 @@ $('#syncDrive').addEventListener('click', async () => {
   $('#dlgMsg').textContent = j ? `Drive: ${j.synced} synced, ${j.failed} failed.` : 'Sync not allowed.';
 });
 $('#newChat').addEventListener('click', () => {
+  cancelSpeech();
   sessionId = newId(); localStorage.setItem('sparkySession', sessionId);
   above.replaceChildren(); below.replaceChildren(); $('#input').value = ''; dlg.close(); greet();
 });
 
+// ---------- settings, history, theme, memory wiring ----------
+Object.assign(settingsCtx, {
+  orb, voices, wake, toast, openExport,
+  voiceSettings: () => voiceSettings,
+  setVoiceSettings: (v, reset) => { voiceSettings = v; if (!reset) Voice.saveSettings(v); },
+  preview: previewVoice,
+  setTheme: (patch) => Theme.set(patch, orb),
+  memoryChanged: () => {},
+  continueChat: (id) => {
+    const c = Hist.get(id); if (!c) return;
+    cancelSpeech(); sessionId = id; localStorage.setItem('sparkySession', id);
+    above.replaceChildren(); below.replaceChildren(); $('#input').value = '';
+    const sp = c.msgs.filter((m) => m.r === 's').slice(-1), us = c.msgs.filter((m) => m.r === 'u').slice(-1);
+    for (const m of c.msgs.slice(-4)) if ((m.r === 's' && sp.includes(m)) || (m.r === 'u' && us.includes(m))) addCard(m.r === 'u' ? 'user' : 'sparky', m.t);
+    addCard('sparky', `Welcome back${Mem.get().name ? ', ' + Mem.get().name : ''}! Let's keep chatting.`);
+    orb.burst(12);
+  },
+});
+initSettings(settingsCtx);
+initHistory(settingsCtx);
+
 // ---------- startup ----------
 function greet() {
-  addCard('sparky', `Hi ${config.childName}! I'm Sparky. Tap my glowing core and ask me anything!`);
+  addCard('sparky', `Hi ${Mem.get().name || config.childName}! I'm Sparky. Tap my glowing core and ask me anything!`);
   orb.burst(12);
 }
 setMuted(muted);
 setState('ready');
 fetch('/api/config').then((r) => r.json()).then((c) => { config = c; }).catch(() => {}).finally(greet);
-if (synth) synth.getVoices(); // warm up the voice list
+if (wakeWasOn() && SR) wake.enable(); // hands-free was turned on earlier: resume it quietly (the browser asks for the mic only if it must)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

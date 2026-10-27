@@ -18,14 +18,36 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const E0 = 0.30;       // camera elevation: looking slightly down on the core (rad)
 const FLOOR = -1.30;   // ground plane height under the core, in core radii
 
+// ---------- accent palette: the emerald art is rotated in hue (luminance preserving, same math as the shader's uHue) ----------
+let HM = [1, 0, 0, 0, 1, 0, 0, 0, 1];            // row-major 3x3
+export const ACCENT_HUE = { emerald: 0, blue: 84, violet: 125, orange: -112, pink: -170 };
+const ACCENT_GAIN = { emerald: 1, blue: 1.45, violet: 1.45, orange: 1.08, pink: 1.2 };   // blue/violet read darker than green at the same luminance
+export const ACCENT_LITE = { emerald: [.62, 1, .30], blue: [.30, .85, 1], violet: [.82, .55, 1], orange: [1, .80, .22], pink: [1, .52, .78] };
+function hueMatrix(deg) {
+  const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return [
+    .213 + c * .787 - s * .213, .715 - c * .715 - s * .715, .072 - c * .072 + s * .928,
+    .213 - c * .213 + s * .143, .715 + c * .285 + s * .140, .072 - c * .072 - s * .283,
+    .213 - c * .213 - s * .787, .715 - c * .715 + s * .715, .072 + c * .928 + s * .072,
+  ];
+}
+/** tint an emerald-art colour (0..255) to the active accent -> "r,g,b" for rgba()/rgb() strings */
+const K = (r, g, b) => {
+  const m = HM, R = r / 255, G = g / 255, B = b / 255, f = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+  return `${f(m[0] * R + m[1] * G + m[2] * B)},${f(m[3] * R + m[4] * G + m[5] * B)},${f(m[6] * R + m[7] * G + m[8] * B)}`;
+};
+
 const VS = 'attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}';
 const FS = `
 precision highp float;
 uniform vec2 uRes, uC, uTilt;
 uniform float uR, uT, uPh, uE, uP, uFlash, uN;
+uniform mat3 uHue;          // accent: luminance-preserving hue rotation of the emerald palette
+uniform vec3 uLite;         // accent highlight colour for the fine secondary veins
 uniform sampler2D uNoise;   // NEAREST-filtered lattice; interpolated here in full float precision (hardware bilinear only has 8 fractional bits, which printed visible stair-step bands)
 float gCy, gSy, gCx, gSx;
 float sq(float x){ return x*x; }
+vec3 H(vec3 v){ return max(uHue*v,0.); }
 float ign(vec2 p){ return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715)))); }
 // 3D value noise, quintic fade, one 4-tap fetch yields two z-slices
 float noise(vec3 x){
@@ -59,9 +81,9 @@ void main(){
   // ---- halo: a tasteful outer glow plus a tight hot fringe (kept low so the sphere keeps its definition)
   float ex=max(d-1.,0.);
   float hb=(0.45+0.80*uE)*(1.+0.5*uP);
-  vec3 halo = vec3(0.00,0.75,0.30)*(exp(-ex*3.0)*0.055+exp(-ex*7.0)*0.13)*hb
+  vec3 halo = H( vec3(0.00,0.75,0.30)*(exp(-ex*3.0)*0.055+exp(-ex*7.0)*0.13)*hb
             + vec3(0.12,1.00,0.50)*exp(-ex*20.)*0.28*hb
-            + vec3(0.60,1.00,0.80)*exp(-ex*85.)*0.40*(0.5+uE);
+            + vec3(0.60,1.00,0.80)*exp(-ex*85.)*0.40*(0.5+uE) );
   float edge=min(min(gl_FragCoord.x,uRes.x-gl_FragCoord.x),min(gl_FragCoord.y,uRes.y-gl_FragCoord.y))/uR;
   halo*=smoothstep(0.0,0.55,edge);
 
@@ -84,7 +106,7 @@ void main(){
     vec3 dw=fromView(vec3(0.,0.,-1.))*(2.*z);
     float stp=2.*z/uN;
     float jit=(fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5)*.0;   // tiny per-pixel start jitter (large jitter on thin veins turns into speckle; the float-precision noise already removed the banding)
-    vec3 acc=vec3(0.); float trans=1.;
+    vec3 acc=vec3(0.), acc2=vec3(0.); float trans=1.;
     for(int i=0;i<6;i++){
       if(float(i)>=uN) break;
       float tt=(float(i)+.5+jit)/uN;
@@ -106,31 +128,31 @@ void main(){
       float wd=1.7*sq(1.-tt)+.10;                           // near slices carry the detail, far ones are faint depth
       vec3 em=( vec3(0.,.30,.09)*cloud*cloud*.55
               + vec3(.10,1.0,.34)*vein*(.9+.9*uE)
-              + vec3(.62,1.,.30)*vein2*(.7+.8*uE)
               + vec3(.95,1.,.85)*vein*vein2*1.5 )*rad*wd;
       em*=mix(vec3(1.),vec3(.35,.75,.80),tt);              // farther slices cooler and dimmer
       acc+=em*trans*stp*1.7;
+      acc2+=uLite*vein2*(.7+.8*uE)*rad*wd*mix(1.,.55,tt)*trans*stp*1.7;
       trans*=exp(-(.10+cloud*.45)*stp);
     }
-    vec3 c=mix(vec3(0.,.006,.004),vec3(0.,.040,.018),lit)*(.5+.8*z);   // deep dark glass body
-    c+=acc*mix(.14,1.25,lit)*mix(.45,1.,ao);
+    vec3 c=H(mix(vec3(0.,.006,.004),vec3(0.,.040,.018),lit)*(.5+.8*z));   // deep dark glass body
+    c+=(H(acc)+acc2)*mix(.14,1.25,lit)*mix(.45,1.,ao);
 
     // small bright white-green hot core (not a big pale blob)
-    c+=vec3(.05,.70,.22)*exp(-d*d*9.)*(.10+.22*uE);
-    c+=vec3(.12,1.,.34)*exp(-d*d*38.)*(.18+.30*uE);
-    c+=vec3(1.1,2.8,.95)*exp(-d*d*260.)*(.45+.40*uE);   // small white-hot green core (pre-tonemap so it lands bright, not grey)
+    c+=H(vec3(.05,.70,.22))*exp(-d*d*9.)*(.10+.22*uE);
+    c+=H(vec3(.12,1.,.34))*exp(-d*d*38.)*(.18+.30*uE);
+    c+=H(vec3(1.1,2.8,.95))*exp(-d*d*260.)*(.45+.40*uE);   // small white-hot green core (pre-tonemap so it lands bright, not grey)
 
     // subtle thickness glow and a thin subsurface band hugging the terminator
-    c+=vec3(0.,.45,.18)*z*z*.035*(.5+uE)*ao;
+    c+=H(vec3(0.,.45,.18))*z*z*.035*(.5+uE)*ao;
     float band=exp(-sq(ndl*3.0))*(.35+.65*fr);
-    c+=vec3(.30,1.,.25)*band*.05*(.35+uE);
+    c+=H(vec3(.30,1.,.25))*band*.05*(.35+uE);
 
     // fresnel and rim lights: cool-mint key rim on the lit side, warm gold kicker low right
     vec2 qd=normalize(q+vec2(1e-4));
     float kr=max(dot(qd,normalize(Lk.xy+vec2(1e-4))),0.);
-    c+=vec3(0.,.65,.26)*pow(fr,3.4)*(.18+.34*uE)*mix(.35,1.,lit);
-    c+=vec3(.50,1.,.80)*pow(fr,4.2)*kr*.80;
-    c+=vec3(.50,1.,.75)*pow(fr,12.)*.60;
+    c+=H(vec3(0.,.65,.26))*pow(fr,3.4)*(.18+.34*uE)*mix(.35,1.,lit);
+    c+=H(vec3(.50,1.,.80))*pow(fr,4.2)*kr*.80;
+    c+=H(vec3(.50,1.,.75))*pow(fr,12.)*.60;
     float warm=pow(max(dot(qd,vec2(.70,-.71)),0.),2.5)*pow(fr,3.4);
     c+=vec3(1.,.72,.22)*warm*.50;
 
@@ -146,17 +168,17 @@ void main(){
     vec2 br=rf.xy-Lk.xy*.95; br=vec2(br.x*.82+br.y*.57,-br.x*.57+br.y*.82);
     vec2 bq=abs(br)-vec2(.17,.075);
     float sdb=length(max(bq,0.))+min(max(bq.x,bq.y),0.);
-    c+=vec3(.92,1.,.96)*smoothstep(.03,-.01,sdb)*smoothstep(.05,.35,z)*.24;
-    c+=vec3(0.,.80,.34)*smoothstep(-.15,-.95,rf.y)*.10*(.5+uE)*smoothstep(0.,.3,z);
+    c+=H(vec3(.92,1.,.96))*smoothstep(.03,-.01,sdb)*smoothstep(.05,.35,z)*.24;
+    c+=H(vec3(0.,.80,.34))*smoothstep(-.15,-.95,rf.y)*.10*(.5+uE)*smoothstep(0.,.3,z);
     float ang=atan(q.y,q.x);
     float da=abs(mod(ang-2.35+3.14159,6.28318)-3.14159);
-    c+=vec3(.90,1.,.95)*exp(-sq((d-.915)/.006))*smoothstep(.80,.05,da)*.55;
+    c+=H(vec3(.90,1.,.95))*exp(-sq((d-.915)/.006))*smoothstep(.80,.05,da)*.55;
     float db=abs(mod(ang+0.85+3.14159,6.28318)-3.14159);
     c+=vec3(1.,.92,.65)*exp(-sq((d-.925)/.006))*smoothstep(.55,.05,db)*.35;
     // thin crisp bright rim
     float rim=exp(-sq((d-1.+1.6*px)/(1.15*px)));
     float rimv=.55+.45*kr+.20*sin(ang*3.+uPh*.6)+uFlash*.5;
-    c+=mix(vec3(.25,1.,.62),vec3(.88,1.,.94),.55)*rim*rimv*(.70+.4*uE);
+    c+=H(mix(vec3(.25,1.,.62),vec3(.88,1.,.94),.55))*rim*rimv*(.70+.4*uE);
 
     vec3 inner=min(c,1.);
     col=min(mix(halo,inner,cov)+halo*.1*(1.-cov),1.);
@@ -180,15 +202,18 @@ function makeSprite(stops, size = 64) {
 class Dust {
   constructor(canvas, count) {
     this.c = canvas; this.x = canvas.getContext('2d');
-    this.sprites = {
-      green: makeSprite([[0, 'rgba(210,255,230,1)'], [0.22, 'rgba(90,255,170,.5)'], [1, 'rgba(0,200,83,0)']]),
-      gold: makeSprite([[0, 'rgba(255,240,190,1)'], [0.22, 'rgba(255,200,80,.5)'], [1, 'rgba(255,160,20,0)']]),
-      bokeh: makeSprite([[0, 'rgba(120,255,190,.34)'], [0.78, 'rgba(120,255,190,.46)'], [0.9, 'rgba(190,255,220,.85)'], [1, 'rgba(120,255,190,0)']]),
-    };
+    this.buildSprites();
     this.p = [];
     for (let i = 0; i < count; i++) this.p.push(this.make(true));
     this.shock = null; this.shockId = 0; this.t = 0; this.cx = 200; this.cy = 400;
     this.resize();
+  }
+  buildSprites() {
+    this.sprites = {
+      green: makeSprite([[0, `rgba(${K(210,255,230)},1)`], [0.22, `rgba(${K(90,255,170)},.5)`], [1, `rgba(${K(0,200,83)},0)`]]),
+      gold: makeSprite([[0, 'rgba(255,240,190,1)'], [0.22, 'rgba(255,200,80,.5)'], [1, 'rgba(255,160,20,0)']]),
+      bokeh: makeSprite([[0, `rgba(${K(120,255,190)},.34)`], [0.78, `rgba(${K(120,255,190)},.46)`], [0.9, `rgba(${K(190,255,220)},.85)`], [1, `rgba(${K(120,255,190)},0)`]]),
+    };
   }
   make(init) {
     const d = Math.pow(Math.random(), 1.25); // 0 far .. 1 near
@@ -266,17 +291,15 @@ export class Orb {
     this.glScale = 1; this.slices = 6; this.slowFrames = 0;
     this.gl = this.initGL();
     this.dust = extra.dust ? new Dust(extra.dust, calm ? 18 : small ? 46 : 70) : null;
-    this.sprites = {
-      gold: makeSprite([[0, 'rgba(255,236,170,1)'], [0.25, 'rgba(255,196,60,.55)'], [1, 'rgba(255,150,20,0)']]),
-      green: makeSprite([[0, 'rgba(235,255,240,1)'], [0.3, 'rgba(60,255,150,.45)'], [1, 'rgba(0,200,83,0)']]),
-    };
+    this.sprites = { gold: makeSprite([[0, 'rgba(255,236,170,1)'], [0.25, 'rgba(255,196,60,.55)'], [1, 'rgba(255,150,20,0)']]) };
     // 3D orbit rings: radius (core radii), inclination, roll, precession speed, comet tail, colours
     this.rings = [
-      { rad: 1.40, ix: 0.34, roll: -0.36, prec: 0.0, ps: 0.06, wob: 0.09, dir: 1, head: rand(0, TAU), tail: 2.3, col: [92, 242, 160], bead: [255, 214, 90], a: 1 },
-      { rad: 1.31, ix: -0.40, roll: 0.52, prec: 1.2, ps: -0.05, wob: 0.08, dir: -1, head: rand(0, TAU), tail: 1.8, col: [255, 200, 61], bead: [200, 255, 225], a: 0.95 },
-      { rad: 1.20, ix: 1.12, roll: 0.95, prec: 0.4, ps: 0.08, wob: 0.07, dir: 1, head: rand(0, TAU), tail: 1.4, col: [190, 255, 225], bead: [255, 236, 170], a: 0.62 },
+      { rad: 1.40, ix: 0.34, roll: -0.36, prec: 0.0, ps: 0.06, wob: 0.09, dir: 1, head: rand(0, TAU), tail: 2.3, col: [92, 242, 160], tc: 1, bead: [255, 214, 90], a: 1 },
+      { rad: 1.31, ix: -0.40, roll: 0.52, prec: 1.2, ps: -0.05, wob: 0.08, dir: -1, head: rand(0, TAU), tail: 1.8, col: [255, 200, 61], bead: [200, 255, 225], tb: 1, a: 0.95 },
+      { rad: 1.20, ix: 1.12, roll: 0.95, prec: 0.4, ps: 0.08, wob: 0.07, dir: 1, head: rand(0, TAU), tail: 1.4, col: [190, 255, 225], tc: 1, bead: [255, 236, 170], a: 0.62 },
     ];
     this.bolts = []; this.parts = []; this.waves = [];
+    this.setAccent(extra.accent || 'emerald');
     this.state = 'ready'; this.energy = 0.3; this.swirl = 0.4; this.ringSpeed = 0.25;
     this.phase = 0; this.breathe = 0; this.t = 0; this.last = 0; this.acc = 0; this.boltT = 1.2; this.rippleT = 0;
     this.flash = 0; this.kick = 0; this.press = 0; this.level = 0; this.levelT = 0; this.levelTarget = 0; this.levelProvider = null; this.waveT = 0;
@@ -312,7 +335,7 @@ export class Orb {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(pr, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.u = {};
-    for (const n of ['uRes', 'uC', 'uTilt', 'uR', 'uT', 'uPh', 'uE', 'uP', 'uFlash', 'uN', 'uNoise']) this.u[n] = gl.getUniformLocation(pr, n);
+    for (const n of ['uRes', 'uC', 'uTilt', 'uR', 'uT', 'uPh', 'uE', 'uP', 'uFlash', 'uN', 'uHue', 'uLite', 'uNoise']) this.u[n] = gl.getUniformLocation(pr, n);
     // 256x256 noise: R = field(x+37,y+17), G = field(x,y), so one bilinear fetch gives two z-slices of 3D value noise
     const N = 256, B = new Uint8Array(N * N), data = new Uint8Array(N * N * 4);
     for (let i = 0; i < B.length; i++) B[i] = (Math.random() * 256) | 0;
@@ -327,6 +350,19 @@ export class Orb {
     gl.uniform1i(this.u.uNoise, 0);
     gl.clearColor(0, 0, 0, 0);
     return gl;
+  }
+
+  /** Recolour the core, rings, glow and sparks' halos: 'emerald' | 'blue' | 'violet' | 'orange' | 'pink' (gold sparks stay gold) */
+  setAccent(name) {
+    if (!(name in ACCENT_HUE)) name = 'emerald';
+    this.accent = name;
+    HM = hueMatrix(ACCENT_HUE[name]).map((v) => v * ACCENT_GAIN[name]);
+    this.hueM = new Float32Array([HM[0], HM[3], HM[6], HM[1], HM[4], HM[7], HM[2], HM[5], HM[8]]); // column-major for GL
+    this.lite = new Float32Array(ACCENT_LITE[name]);
+    const t = (c) => K(c[0], c[1], c[2]).split(',').map(Number);
+    for (const r of this.rings || []) { r.colT = r.tc ? t(r.col) : r.col; r.beadT = r.tb ? t(r.bead) : r.bead; }
+    this.sprites.green = makeSprite([[0, `rgba(${K(235,255,240)},1)`], [0.3, `rgba(${K(60,255,150)},.45)`], [1, `rgba(${K(0,200,83)},0)`]]);
+    if (this.dust) this.dust.buildSprites();
   }
 
   setState(s) { this.state = STATES[s] ? s : 'ready'; }
@@ -605,6 +641,8 @@ export class Orb {
     gl.uniform1f(u.uP, P);
     gl.uniform1f(u.uFlash, this.flash);
     gl.uniform1f(u.uN, this.slices);
+    gl.uniformMatrix3fv(u.uHue, false, this.hueM);
+    gl.uniform3fv(u.uLite, this.lite);
     gl.uniform2f(u.uTilt, this.cam.yaw, this.cam.pitch);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
@@ -613,8 +651,8 @@ export class Orb {
     const r = this.R * (1 + P);
     c.globalCompositeOperation = 'lighter';
     const g = c.createRadialGradient(this.ccx, this.ccy, 0, this.ccx, this.ccy, r * 1.8);
-    g.addColorStop(0, 'rgba(220,255,235,.95)'); g.addColorStop(0.35, `rgba(0,200,83,${0.5 + e * 0.3})`);
-    g.addColorStop(0.56, 'rgba(0,120,50,.5)'); g.addColorStop(1, 'rgba(0,200,83,0)');
+    g.addColorStop(0, `rgba(${K(220,255,235)},.95)`); g.addColorStop(0.35, `rgba(${K(0,200,83)},${0.5 + e * 0.3})`);
+    g.addColorStop(0.56, `rgba(${K(0,120,50)},.5)`); g.addColorStop(1, `rgba(${K(0,200,83)},0)`);
     c.fillStyle = g; c.fillRect(0, 0, this.w, this.h);
     c.globalCompositeOperation = 'source-over';
   }
@@ -630,25 +668,25 @@ export class Orb {
     c.save(); c.globalCompositeOperation = 'lighter';
     c.translate(gx, gy); c.scale(1, rat);
     let g = c.createRadialGradient(0, 0, 0, 0, 0, rx * 1.75);
-    g.addColorStop(0, `rgba(30,255,150,${0.34 * en / hi})`); g.addColorStop(0.28, `rgba(0,220,110,${0.17 * en})`);
-    g.addColorStop(0.62, `rgba(0,170,80,${0.06 * en})`); g.addColorStop(1, 'rgba(0,150,70,0)');
+    g.addColorStop(0, `rgba(${K(30,255,150)},${0.34 * en / hi})`); g.addColorStop(0.28, `rgba(${K(0,220,110)},${0.17 * en})`);
+    g.addColorStop(0.62, `rgba(${K(0,170,80)},${0.06 * en})`); g.addColorStop(1, `rgba(${K(0,150,70)},0)`);
     c.fillStyle = g; c.beginPath(); c.arc(0, 0, rx * 1.75, 0, TAU); c.fill();
     g = c.createRadialGradient(0, 0, 0, 0, 0, rx * 0.75);
-    g.addColorStop(0, `rgba(190,255,225,${0.40 * en / hi})`); g.addColorStop(0.45, `rgba(60,255,160,${0.16 * en})`); g.addColorStop(1, 'rgba(0,200,100,0)');
+    g.addColorStop(0, `rgba(${K(190,255,225)},${0.40 * en / hi})`); g.addColorStop(0.45, `rgba(${K(60,255,160)},${0.16 * en})`); g.addColorStop(1, `rgba(${K(0,200,100)},0)`);
     c.fillStyle = g; c.beginPath(); c.arc(0, 0, rx * 0.75, 0, TAU); c.fill();
     c.restore();
     // reflection column: a soft vertical smear of the core's light on the glossy floor
     c.save(); c.globalCompositeOperation = 'lighter'; c.translate(this.ccx, gy + ry * 0.45); c.scale(1, 1.5);
     g = c.createRadialGradient(0, 0, 0, 0, 0, R * 0.62);
-    g.addColorStop(0, `rgba(150,255,210,${0.20 * en})`); g.addColorStop(0.5, `rgba(40,240,140,${0.07 * en})`); g.addColorStop(1, 'rgba(0,200,100,0)');
+    g.addColorStop(0, `rgba(${K(150,255,210)},${0.20 * en})`); g.addColorStop(0.5, `rgba(${K(40,240,140)},${0.07 * en})`); g.addColorStop(1, `rgba(${K(0,200,100)},0)`);
     c.fillStyle = g; c.beginPath(); c.arc(0, 0, R * 0.62, 0, TAU); c.fill();
     c.restore();
     // platform rings: thin, slowly turning arcs, brighter when busy
     c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
     const ph = this.t * (0.12 + this.ringSpeed * 0.12), a = (0.30 + e * 0.28);
-    this.ringOnFloor(c, fy, 1.05, 0, 1, `rgba(120,255,190,${Math.min(1, a * 0.9)})`, 1.3);
+    this.ringOnFloor(c, fy, 1.05, 0, 1, `rgba(${K(120,255,190)},${Math.min(1, a * 0.9)})`, 1.3);
     for (let i = 0; i < 3; i++) this.arcOnFloor(c, fy, 1.5, ph + i * 2.09, 1.15, `rgba(255,205,90,${Math.min(1, a)})`, 1.5);
-    this.arcOnFloor(c, fy, 1.24, -ph * 1.4, 2.6, `rgba(120,255,190,${a * 0.7})`, 1.2);
+    this.arcOnFloor(c, fy, 1.24, -ph * 1.4, 2.6, `rgba(${K(120,255,190)},${a * 0.7})`, 1.2);
     c.globalCompositeOperation = 'source-over';
   }
   ringOnFloor(c, y, rad, a0, len, style, lw) { this.arcOnFloor(c, y, rad, a0, len * TAU, style, lw); }
@@ -695,19 +733,19 @@ export class Orb {
       const g = Math.round(255 - 40 * p), bl = Math.round(150 - 80 * p), r = Math.round(70 + 185 * p);
       if (w.kind === 'floor' || w.kind === 'both') {
         const rad = 0.45 + ease * (rmax - 0.45);
-        this.loopRing(b, f, FLOOR - this.bob, rad, [[`rgba(${r},${g},${bl},${0.07 * a})`, 5 * (1 - p * 0.5)], [`rgba(${r},${g},${bl},${0.95 * a})`, 1.6 * (1 - p * 0.5)]]);
+        this.loopRing(b, f, FLOOR - this.bob, rad, [[`rgba(${K(r, g, bl)},${0.07 * a})`, 5 * (1 - p * 0.5)], [`rgba(${K(r, g, bl)},${0.95 * a})`, 1.6 * (1 - p * 0.5)]]);
       }
       if (w.kind === 'eq' || w.kind === 'both') {
         const rad = 1.08 + ease * (rmax - 1.08) * (w.shell ? 1 : 0.85);
         const sc = w.shell ? 1 : 0.55;
-        this.loopRing(b, f, 0, rad, [[`rgba(${r},${g},${bl},${0.07 * a * sc})`, 5 * (1 - p * 0.6)], [`rgba(${Math.min(255, r + 80)},255,${bl + 60},${0.95 * a * sc})`, 1.5 * (1 - p * 0.6)]]);
+        this.loopRing(b, f, 0, rad, [[`rgba(${K(r, g, bl)},${0.07 * a * sc})`, 5 * (1 - p * 0.6)], [`rgba(${K(Math.min(255, r + 80), 255, Math.min(255, bl + 60))},${0.95 * a * sc})`, 1.5 * (1 - p * 0.6)]]);
       }
       if (w.shell) { // spherical shock shell, facing the camera
         const sr = this.R * (1.02 + ease * 0.5);
-        f.strokeStyle = `rgba(200,255,225,${0.5 * a})`; f.lineWidth = 2.2 * (1 - p);
+        f.strokeStyle = `rgba(${K(200,255,225)},${0.5 * a})`; f.lineWidth = 2.2 * (1 - p);
         f.beginPath(); f.arc(this.ccx, this.ccy, sr, 0, TAU); f.stroke();
         const g2 = f.createRadialGradient(this.ccx, this.ccy, sr * 0.8, this.ccx, this.ccy, sr * 1.18);
-        g2.addColorStop(0, 'rgba(0,255,150,0)'); g2.addColorStop(0.6, `rgba(0,255,150,${0.08 * a})`); g2.addColorStop(1, 'rgba(0,255,150,0)');
+        g2.addColorStop(0, `rgba(${K(0,255,150)},0)`); g2.addColorStop(0.6, `rgba(${K(0,255,150)},${0.08 * a})`); g2.addColorStop(1, `rgba(${K(0,255,150)},0)`);
         f.fillStyle = g2; f.beginPath(); f.arc(this.ccx, this.ccy, sr * 1.18, 0, TAU); f.fill();
       }
       return true;
@@ -732,7 +770,7 @@ export class Orb {
         this.proj(x2 * cyr + z1 * syr, y2, -x2 * syr + z1 * cyr, o);  // precession, then camera
       };
       for (let i = 0; i <= N; i++) { place((i / N) * TAU, p); xs[i] = p[0]; ys[i] = p[1]; zs[i] = p[2]; ss[i] = p[3]; }
-      const [cr, cg, cb] = ring.col;
+      const [cr, cg, cb] = ring.colT;
       // soft occlusion: the near arc darkens the glass it crosses
       f.save();
       f.beginPath(); f.arc(this.ccx, this.ccy, this.R * 0.985, 0, TAU); f.clip();
@@ -753,7 +791,7 @@ export class Orb {
       }
       f.globalCompositeOperation = 'lighter';
       place(ring.head, p);
-      const [hx, hy, hz, hs] = p, [br, bg, bb] = ring.bead, c = hz >= 0 ? f : b, sz = 11 * hs * (0.8 + 0.3 * ring.a);
+      const [hx, hy, hz, hs] = p, [br, bg, bb] = ring.beadT, c = hz >= 0 ? f : b, sz = 11 * hs * (0.8 + 0.3 * ring.a);
       c.globalAlpha = 0.55; c.drawImage(this.sprites.gold, hx - sz / 2, hy - sz / 2, sz, sz);
       c.globalAlpha = 1; c.fillStyle = `rgb(${br},${bg},${bb})`;
       c.beginPath(); c.arc(hx, hy, 1.9 * hs, 0, TAU); c.fill();
@@ -774,9 +812,9 @@ export class Orb {
       const a = (1 - b.life / b.ttl) * rand(0.55, 1);
       for (const p of b.paths) {
         c.beginPath(); p.pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
-        c.strokeStyle = `rgba(0,255,140,${0.06 * a})`; c.lineWidth = 7 * p.w; c.stroke();
-        c.strokeStyle = `rgba(90,255,175,${0.34 * a})`; c.lineWidth = 2.6 * p.w; c.stroke();
-        c.strokeStyle = `rgba(240,255,245,${0.95 * a})`; c.lineWidth = Math.max(0.7, 1.4 * p.w); c.stroke();
+        c.strokeStyle = `rgba(${K(0,255,140)},${0.06 * a})`; c.lineWidth = 7 * p.w; c.stroke();
+        c.strokeStyle = `rgba(${K(90,255,175)},${0.34 * a})`; c.lineWidth = 2.6 * p.w; c.stroke();
+        c.strokeStyle = `rgba(${K(240,255,245)},${0.95 * a})`; c.lineWidth = Math.max(0.7, 1.4 * p.w); c.stroke();
       }
       c.globalAlpha = a; c.drawImage(this.sprites.green, b.ex - 9, b.ey - 9, 18, 18); c.globalAlpha = 1;
       return true;

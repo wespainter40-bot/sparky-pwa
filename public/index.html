@@ -5,6 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sparky</title>
   <meta name="theme-color" content="#07090a">
+  <script>
+    // apply the saved theme before first paint (no flash of the wrong colours)
+    (function () {
+      try {
+        var t = JSON.parse(localStorage.getItem('sparky.theme.v1') || '{}'), r = document.documentElement;
+        var A = { emerald: ['0,200,83', '92,242,160', '#00C853', '#5cf2a0', '#00a846'], blue: ['45,140,255', '140,196,255', '#2D8CFF', '#8cc4ff', '#1a6fe0'],
+          violet: ['139,92,246', '196,170,255', '#8B5CF6', '#c4aaff', '#6d3fe0'], orange: ['255,122,26', '255,178,122', '#FF7A1A', '#ffb27a', '#e05f00'],
+          pink: ['255,45,149', '255,156,204', '#FF2D95', '#ff9ccc', '#d6176f'] };
+        var a = A[t.accent] || A.emerald, light = t.mode === 'light';
+        r.dataset.theme = ['dark', 'oled', 'light'].indexOf(t.mode) >= 0 ? t.mode : 'dark'; r.dataset.accent = A[t.accent] ? t.accent : 'emerald';
+        r.style.setProperty('--ac', a[0]); r.style.setProperty('--ac2', light ? a[0] : a[1]);
+        r.style.setProperty('--green', light ? a[4] : a[2]); r.style.setProperty('--green-2', light ? a[4] : a[3]); r.style.setProperty('--green-d', a[4]);
+        var m = { dark: '#07090a', oled: '#000000', light: '#eaf3ee' }[r.dataset.theme];
+        document.querySelector('meta[name="theme-color"]').content = m;
+      } catch (e) {}
+    })();
+  </script>
   <meta name="description" content="Sparky, a friendly energy-core chat assistant">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -30,8 +47,11 @@
           <svg class="on" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5l4.5 3.8V5.7L7.5 9.5H4z"/><path d="M15.7 9a4.2 4.2 0 0 1 0 6M18.4 6.4a8 8 0 0 1 0 11.2"/></svg>
           <svg class="off" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5l4.5 3.8V5.7L7.5 9.5H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg>
         </button>
-        <button id="exportBtn" class="icon-btn" aria-label="Save or export chats">
-          <svg viewBox="0 0 24 24"><path d="M12 4v10.5m0 0L7.8 10.3M12 14.5l4.2-4.2M5 19.5h14"/></svg>
+        <button id="histBtn" class="icon-btn" aria-label="Chat history">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.2"/><path d="M12 7.5V12l3 2"/></svg>
+        </button>
+        <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.6v2.1M12 18.3v2.1M3.6 12h2.1M18.3 12h2.1M6.1 6.1l1.5 1.5M16.4 16.4l1.5 1.5M17.9 6.1l-1.5 1.5M7.6 16.4l-1.5 1.5"/></svg>
         </button>
       </div>
     </header>
@@ -72,6 +92,94 @@
     </div>
     <p id="dlgMsg" class="dlg-note" role="status"></p>
     <button id="dlgClose" class="btn ghost">Close</button>
+  </dialog>
+
+  <dialog id="settingsDlg" class="sheet" aria-labelledby="settingsTitle">
+    <header class="sheet-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <button id="settingsClose" class="icon-btn" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+    <div class="sheet-body">
+      <section class="sec" aria-labelledby="hVoice">
+        <h3 id="hVoice">Sparky's voice</h3>
+        <div id="personas" class="personas" role="radiogroup" aria-label="Sparky personas"></div>
+        <label class="field" for="voiceSel">Voice</label>
+        <div class="select-wrap"><select id="voiceSel" aria-label="Voice"></select></div>
+        <div class="slider">
+          <label for="pitch">Pitch <output id="pitchVal" for="pitch"></output></label>
+          <input id="pitch" type="range" min="0.5" max="2" step="0.05">
+          <div class="ends"><span>Deep</span><span>High</span></div>
+        </div>
+        <div class="slider">
+          <label for="rate">Speed <output id="rateVal" for="rate"></output></label>
+          <input id="rate" type="range" min="0.6" max="1.6" step="0.05">
+          <div class="ends"><span>Slow</span><span>Fast</span></div>
+        </div>
+        <div class="row">
+          <button id="voicePreview" class="btn primary" type="button">&#9654; Preview</button>
+          <button id="voiceReset" class="btn ghost" type="button">Reset</button>
+        </div>
+        <p id="voiceNote" class="note"></p>
+      </section>
+
+      <section class="sec" aria-labelledby="hLook">
+        <h3 id="hLook">Look</h3>
+        <div id="modes" class="seg" role="radiogroup" aria-label="Theme"></div>
+        <div id="accents" class="swatches" role="radiogroup" aria-label="Accent colour"></div>
+      </section>
+
+      <section class="sec" aria-labelledby="hWake">
+        <h3 id="hWake">Hands-free</h3>
+        <button id="wakeToggle" class="switch-row" type="button" role="switch" aria-checked="false">
+          <span class="switch-text"><b>Hey Sparky</b><small id="wakeSub">Say &ldquo;Hey Sparky&rdquo; to talk without tapping</small></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <p id="wakeNote" class="note">Works only while Sparky is open on screen, and only in browsers with speech recognition (Chrome, Edge, Android Chrome). iPhone and iPad Safari may not work. Off by default.</p>
+      </section>
+
+      <section class="sec" aria-labelledby="hMem">
+        <h3 id="hMem">What Sparky remembers</h3>
+        <p class="note top">Kept only on this device. Sparky uses it to be friendlier. Edit or remove anything.</p>
+        <ul id="memList" class="mem-list"></ul>
+        <form id="memForm" class="mem-add" autocomplete="off">
+          <input id="memInput" type="text" maxlength="80" placeholder="Add something, like: likes dinosaurs" aria-label="Add something for Sparky to remember">
+          <button class="btn primary" type="submit">Add</button>
+        </form>
+        <button id="memForget" class="btn ghost danger" type="button">Forget everything</button>
+      </section>
+
+      <section class="sec" aria-labelledby="hSave">
+        <h3 id="hSave">Chats</h3>
+        <button id="exportBtn" class="btn ghost" type="button">Save or export chats</button>
+      </section>
+    </div>
+    <div id="settingsConfirm" class="confirm" hidden role="alertdialog" aria-live="assertive">
+      <p id="settingsConfirmMsg"></p>
+      <div class="row"><button id="settingsConfirmYes" class="btn danger-solid" type="button">Yes, do it</button><button id="settingsConfirmNo" class="btn ghost" type="button">Cancel</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="histDlg" class="sheet" aria-labelledby="histTitle">
+    <header class="sheet-head">
+      <button id="histBack" class="icon-btn" aria-label="Back to the list" hidden><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <h2 id="histTitle">Chat history</h2>
+      <button id="histClose" class="icon-btn" aria-label="Close history"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+    <div id="histListView" class="sheet-body">
+      <input id="histSearch" class="search" type="search" placeholder="Search your chats" aria-label="Search your chats" autocomplete="off">
+      <ul id="histList" class="hist-list"></ul>
+      <p id="histEmpty" class="note" hidden></p>
+      <div class="row"><button id="histClearAll" class="btn ghost danger" type="button">Clear all</button><button id="histExport" class="btn ghost" type="button">Save or export</button></div>
+    </div>
+    <div id="histDetailView" class="sheet-body" hidden>
+      <p id="histMeta" class="note top"></p>
+      <div id="histTranscript" class="transcript"></div>
+      <div class="row"><button id="histContinue" class="btn primary" type="button">Continue this chat</button><button id="histDelete" class="btn ghost danger" type="button">Delete</button></div>
+    </div>
+    <div id="histConfirm" class="confirm" hidden role="alertdialog" aria-live="assertive">
+      <p id="histConfirmMsg"></p>
+      <div class="row"><button id="histConfirmYes" class="btn danger-solid" type="button">Yes, delete</button><button id="histConfirmNo" class="btn ghost" type="button">Cancel</button></div>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

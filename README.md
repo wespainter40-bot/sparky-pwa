@@ -174,3 +174,14 @@ scripts/make_icons.py  regenerates the PNG icons (needs Pillow): npm run icons
 - Kid-safety relies on the system prompt of the chosen model plus a prompt-only lookup filter. There is no separate content-moderation pass or parental PIN yet.
 - Only the latest few cards are shown on screen. Older ones live in the log and exports.
 - No per-device auth: the session id in the browser is the key to that chat's download link.
+
+## Settings, history, themes, Hey Sparky and memory (v6)
+
+All of this is per device (localStorage) and works with the existing server logging unchanged.
+
+- **Voice picker** (gear icon): lists the device's own `speechSynthesis` voices (English first, natural/neural/Google voices at the top, friendly names), Pitch 0.5-2 and Speed 0.6-1.6 sliders with live values, Preview and Reset, and four personas (Friendly Sparky, Robot, Chipmunk, Calm Storyteller) that set voice + pitch + rate. Handles voices that load late (`voiceschanged` + polling) and browsers with no voices. Saved as `sparky.voice.v1`; applied to every spoken sentence (including streamed ones). Mute still silences Sparky (Preview always speaks). Voice lists differ on every device.
+- **History** (clock icon): searchable list of past chats (title, date, message count), full transcript, Continue, delete one, clear all (inline confirm). Stored as `sparky.history.v1` (max 100 chats). Continuing a chat reuses its session id; the server only has the earlier context if its disk still has it (Render's free disk is ephemeral).
+- **Themes**: Dark, OLED black, Light, plus accent colours Emerald, Electric blue, Violet, Sunset orange, Hot pink (`sparky.theme.v1`). The accent recolours UI highlights through CSS variables (`--ac`, `--green`) and the orb through a hue-rotation matrix (`uHue`) in the shader and the 2D layers; sparks stay gold. `<meta name="theme-color">` follows the theme.
+- **Hey Sparky** (opt-in, off by default): continuous Web Speech recognition that waits for "hey/okay sparky" (and common mis-hearings). Plays a chime and spark burst, then listens for the next sentence and resumes after the reply. It pauses while Sparky talks or thinks. It only works while the app is open in the foreground and only in browsers with SpeechRecognition (Chrome, Edge, Android Chrome); iOS Safari is limited. Android Chrome may beep each time recognition restarts.
+- **Memory**: name and short facts ("my name is...", "call me...", "I like...", "my favorite X is...", "short answers") are picked up client-side, editable in Settings, with Forget everything. A sanitized block is sent as `memory` with each chat; the server (`src/prompt.js`) re-validates it (length limits, no links/numbers/instruction-like text) and adds it as untrusted background facts.
+- Service worker cache is `sparky-shell-v6`.
