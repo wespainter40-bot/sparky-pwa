@@ -1,6 +1,6 @@
 # Sparky
 
-A free, kid-friendly PWA chat assistant with a glowing green "energy core". Built for Pearson (age 7), owned by Wesley Painter.
+A free, kid-friendly PWA chat assistant with a glowing green "energy core". Family friendly and owned by Wesley Painter.
 
 - Tap the core to talk (Web Speech API), or type. Sparky answers out loud (mute button) and in floating message cards.
 - The core idles with a slow pulse, and pulses faster and brighter while Sparky is listening, thinking or speaking. Gold sparks fly on activity.
@@ -55,7 +55,7 @@ The system prompt (in `src/prompt.js`) makes Sparky friendly, curious, upbeat, s
 | --- | --- | --- |
 | POST | `/api/chat` | Body `{sessionId, message, source: "text"\|"voice", stream?: false}`. Default response is Server-Sent Events: `meta` (`provider`, `search`), many `token` (`{t}`), then `done`. With `"stream": false` it returns `{reply, provider, search}` JSON. `sessionId` is 8-64 chars `[A-Za-z0-9_-]` (the browser uses a UUID). |
 | GET | `/api/health` | Status and the active provider chain |
-| GET | `/api/config` | Child name, Drive status, whether an admin token is needed |
+| GET | `/api/config` | Drive status, whether an admin token is needed |
 | GET | `/api/my/:sessionId.md` | Download one chat as Markdown (used by the UI button) |
 | GET | `/api/sessions` | List sessions (admin) |
 | GET | `/api/sessions/:id` | One session with all messages (admin) |
@@ -100,14 +100,14 @@ tags: [sparky, chat]
 
 # Sparky chat - 2026-10-27
 
-### 14:08:10 - Pearson (voice)
+### 14:08:10 - User (voice)
 Why is the sky blue?
 
 ### 14:08:13 - Sparky
 Sunlight scatters...
 ```
 
-Times in the Markdown use `TIMEZONE` (default `America/Chicago`); the child's name comes from `CHILD_NAME`. Exports and Drive use the file name `YYYY-MM-DD Sparky <first 8 of id>.md`, so you can drop the folder straight into an Obsidian vault.
+Times in the Markdown use `TIMEZONE` (default `America/Chicago`); the speaker is labelled `User`. Exports and Drive use the file name `YYYY-MM-DD Sparky <first 8 of id>.md`, so you can drop the folder straight into an Obsidian vault.
 
 `GET /api/export` returns `{ exportedAt, sessions: [{sessionId, startedAt, updatedAt, messages: [...]}] }` with the same message objects as the JSONL.
 
@@ -185,3 +185,8 @@ All of this is per device (localStorage) and works with the existing server logg
 - **Hey Sparky** (opt-in, off by default): continuous Web Speech recognition that waits for "hey/okay sparky" (and common mis-hearings). Plays a chime and spark burst, then listens for the next sentence and resumes after the reply. It pauses while Sparky talks or thinks. It only works while the app is open in the foreground and only in browsers with SpeechRecognition (Chrome, Edge, Android Chrome); iOS Safari is limited. Android Chrome may beep each time recognition restarts.
 - **Memory**: name and short facts ("my name is...", "call me...", "I like...", "my favorite X is...", "short answers") are picked up client-side, editable in Settings, with Forget everything. A sanitized block is sent as `memory` with each chat; the server (`src/prompt.js`) re-validates it (length limits, no links/numbers/instruction-like text) and adds it as untrusted background facts.
 - Service worker cache is `sparky-shell-v6`.
+
+## v7: push-to-talk and naming fixes
+- `public/listen.js` is the single push-to-talk recognizer manager (idle / starting / listening / finishing, watchdogs, one retry on `audio-capture`/InvalidState). Tap the core or mic once to start, again to finish. The live transcript shows as your card while you speak, and whatever was heard (even if only interim) is sent when it ends. The real mic-level meter is desktop-only because a second `getUserMedia` stream can kill SpeechRecognition on phones. The wake-word recognizer is paused while push-to-talk is active.
+- Sparky no longer assumes the user is named Pearson: the prompt uses "friend" until the user tells it a name (Memory), logs label the speaker `User`, and `CHILD_NAME` is ignored. The wake phrase is always "Hey Sparky".
+- Service worker cache: `sparky-shell-v7`.

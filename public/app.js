@@ -4,6 +4,7 @@ import * as Mem from '/memory.js';
 import * as Hist from '/history.js';
 import * as Voice from '/voice.js';
 import { Wake, chime, isOn as wakeWasOn } from '/wake.js';
+import { Listener } from '/listen.js';
 import { initSettings, initHistory } from '/panels.js';
 
 const $ = (s) => document.querySelector(s);
@@ -14,13 +15,15 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 if (new URLSearchParams(location.search).has('debug')) window.__orb = orb;
 let sessionId = localStorage.getItem('sparkySession');
+// v7: start a fresh server-side conversation once, so earlier replies that called the user by the wrong name do not steer the model
+if (localStorage.getItem('sparkySessionV') !== '7') { sessionId = null; localStorage.setItem('sparkySessionV', '7'); }
 if (!sessionId) { sessionId = newId(); localStorage.setItem('sparkySession', sessionId); }
 function newId() {
   return (crypto.randomUUID ? crypto.randomUUID() : [...Array(32)].map(() => Math.floor(Math.random() * 16).toString(16)).join(''));
 }
 
-let config = { childName: 'Pearson', drive: {} };
-let busy = false, listening = false, recog = null, sparkTimer = null;
+let config = { drive: {} };
+let busy = false, listening = false, sparkTimer = null, micCard = null;
 let muted = localStorage.getItem('sparkyMuted') === '1';
 let pendingSpeech = 0;
 
@@ -42,7 +45,7 @@ const wake = new Wake({
   onWake: (rest) => {
     chime(); orb.burst(26); orb.shockwave(0.6);
     if (rest && rest.length > 2) setTimeout(() => send(rest, 'voice'), 250);          // "Hey Sparky, what is the moon?" in one go
-    else setTimeout(() => { if (!busy && !listening) startListening(true); wake.sync(); }, 380);
+    else setTimeout(() => { if (!busy && !listening) beginListening({ quiet: true }); else wake.sync(); }, 380);
   },
 });
 document.addEventListener('visibilitychange', () => wake.sync());
@@ -131,6 +134,7 @@ function speak(text, { force = false } = {}) {
   let finished = false; const gen = speechGen;
   const done = () => { if (finished || gen !== speechGen) return; finished = true; pendingSpeech = Math.max(0, pendingSpeech - 1); if (!listening) settle(); };
   u.onend = done; u.onerror = done;
+  setTimeout(done, 4000 + (clean.length * 95) / Math.max(0.5, voiceSettings.rate)); // some browsers never fire onend: do not stay 'speaking' forever
   synth.speak(u);
   if (!busy && !listening) setState('speaking');
 }
@@ -156,17 +160,17 @@ function makeSpeaker() {
 }
 
 // ---------- chat ----------
-async function send(text, source = 'text') {
+async function send(text, source = 'text', cardEl = null) {
   text = text.trim();
-  if (!text || busy) return;
-  stopListening();
+  if (!text || busy) { if (cardEl) cardEl.remove(); return; }
+  micCard = null; stopListening();
   cancelSpeech();
   busy = true;
   const learned = Mem.learn(text);
   if (learned.name) { toast(`Nice to meet you, ${learned.name}! I'll remember that.`); settingsCtx.refreshSettings?.(); }
   else if (learned.added.length) { toast(`Got it! I'll remember: ${learned.added[0]}`); settingsCtx.refreshSettings?.(); }
   Hist.add(sessionId, 'user', text);
-  addCard('user', text);
+  if (cardEl) { cardEl.classList.remove('interim'); cardEl.textContent = text; } else addCard('user', text);
   orb.burst(18);
   setState('thinking');
   const card = addCard('sparky', '');
@@ -174,8 +178,9 @@ async function send(text, source = 'text') {
   const speaker = makeSpeaker();
   let reply = '';
   try {
+    const ctl = new AbortController(), kill = setTimeout(() => ctl.abort(), 90000); // never stay in 'thinking' forever
     const res = await fetch('/api/chat', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      signal: ctl.signal, method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId, message: text, source, memory: Mem.payload() }),
     });
     if (!res.ok) throw new Error(res.status === 429 ? 'slow' : 'http');
@@ -198,6 +203,7 @@ async function send(text, source = 'text') {
         speaker.push(t);
       }
     }
+    clearTimeout(kill);
     speaker.flush();
   } catch (e) {
     reply ||= e.message === 'slow' ? 'Whoa, that was a lot of questions! Give me a tiny breather.' : "I can't reach my brain right now. Check the internet and try again!";
@@ -210,12 +216,15 @@ async function send(text, source = 'text') {
   settle();
 }
 
-// ---------- mic level meter (real input level drives the core's ripples; falls back to a simulated level) ----------
+// ---------- mic level meter (desktop only, real input level drives the core's ripples; phones use the simulated level) ----------
+// Opening a second getUserMedia stream next to SpeechRecognition makes many Android/Windows browsers drop the recognizer
+// ("audio-capture" / ends instantly), so it is skipped on touch devices and switched off for good at the first sign of trouble.
 const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const COARSE = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 let meter = null, meterTok = 0;
 async function startMeter() {
   const tok = ++meterTok;
-  if (IOS || localStorage.getItem('sparkyNoMeter') === '1' || !navigator.mediaDevices?.getUserMedia) return;
+  if (IOS || COARSE || localStorage.getItem('sparkyNoMeter') === '1' || !navigator.mediaDevices?.getUserMedia) return;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -248,58 +257,79 @@ orb.onTilt = (x, y) => {
   mainEl.style.setProperty('--rot', ang < 0.02 ? '0 1 0 0deg' : `${(-y).toFixed(3)} ${(-x).toFixed(3)} 0 ${ang.toFixed(2)}deg`);
 };
 
-// ---------- voice input ----------
-function startListening(quiet = false) {
-  if (!SR) { toast('Voice typing is not supported in this browser. Type to Sparky instead!'); $('#input').focus(); return; }
-  cancelSpeech();
-  recog = new SR();
-  recog.lang = navigator.language || 'en-US';
-  recog.interimResults = true; recog.continuous = false;
-  let finalText = '', retryMic = false;
-  recog.onresult = (ev) => {
-    let interim = '';
-    for (const r of ev.results) (r.isFinal ? (finalText += r[0].transcript) : (interim += r[0].transcript));
-    $('#input').value = finalText + interim;
-  };
-  recog.onerror = (ev) => {
-    if (ev.error === 'audio-capture' && meter) { // the mic meter and the recognizer fought over the mic: never use the meter again, retry quietly
-      localStorage.setItem('sparkyNoMeter', '1'); stopMeter(); retryMic = true;
-      return;
-    }
-    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') toast('Microphone is blocked. Allow it in the browser, or type instead.');
-    else if (ev.error === 'no-speech') { if (!quiet) toast("I didn't hear anything. Tap and try again!"); }
-    else if (ev.error !== 'aborted') toast('Voice did not work. You can type instead.');
-  };
-  recog.onend = () => {
-    if (retryMic) { retryMic = false; try { recog.start(); return; } catch { /* fall through and finish */ } }
-    listening = false; clearInterval(sparkTimer); stopMeter();
-    const text = (finalText || $('#input').value).trim();
-    $('#input').value = '';
-    if (text && !busy) send(text, 'voice'); else settle();
-  };
-  try { recog.start(); } catch { return; }
-  listening = true; setState('listening');
-  orb.burst(14);
-  setTimeout(() => { if (listening) startMeter(); }, 250);
-  sparkTimer = setInterval(() => orb.burst(3), 450);
+// ---------- voice input (push to talk) ----------
+// One state machine (listen.js) owns the recognizer. app.js only reacts to its callbacks.
+const buzz = (ms = 14) => { try { navigator.vibrate && navigator.vibrate(ms); } catch { /* not supported */ } };
+function showInterim(text) {
+  if (!micCard || !micCard.isConnected) { micCard = addCard('user', text); micCard.classList.add('interim'); }
+  else micCard.textContent = text;
+  below.scrollTop = below.scrollHeight;
 }
-function stopListening() {
-  if (!listening) return;
+function dropMicCard() { if (micCard) { const c = micCard; micCard = null; c.classList.contains('leaving') || leave(c); } }
+function endListeningUi() {
   listening = false; clearInterval(sparkTimer); stopMeter();
-  try { recog.onend = null; recog.abort(); } catch { /* ignore */ }
+}
+const listener = new Listener({
+  SR,
+  lang: () => navigator.language || 'en-US',
+  onListening: () => { orb.burst(14); clearInterval(sparkTimer); sparkTimer = setInterval(() => orb.burst(3), 450); },
+  onAudio: () => setTimeout(() => { if (listener.listening) startMeter(); }, 500),
+  onInterim: showInterim,
+  onError: (code, msg) => {
+    if (code === 'audio-capture') localStorage.setItem('sparkyNoMeter', '1');    // never let the meter compete again
+    toast(msg, code === 'not-allowed' || code === 'service-not-allowed' ? 6500 : 4200);
+  },
+  onDone: (text, reason) => {
+    endListeningUi();
+    if (text && !busy && reason !== 'cancel' && reason !== 'error') { const c = micCard; micCard = null; send(text, 'voice', c); return; }
+    if (reason === 'no-speech' || reason === 'silence') { if (!listener.quiet) toast("I didn't hear anything. Tap the glow and try again!"); }
+    dropMicCard(); settle();
+  },
+});
+/** start a push-to-talk turn. The UI flips instantly; the recognizer starts a beat later so the wake word recognizer and any
+ *  speech output have let go of the audio hardware first. */
+function beginListening({ quiet = false } = {}) {
+  if (!SR) { toast('Voice typing is not supported in this browser. Type to Sparky instead!'); $('#input').focus(); return; }
+  if (listener.active || busy) return;
+  const wasTalking = pendingSpeech > 0 || (synth && synth.speaking);
+  cancelSpeech();                                  // Sparky stops talking the moment you tap
+  listener.quiet = quiet;
+  listening = true;                                // wake word recognizer is released by setState -> wake.sync()
+  setState('listening');
+  orb.burst(10);
   $('#input').value = '';
+  const delay = wasTalking || wake.on ? 320 : 90;
+  setTimeout(() => { if (listening && !listener.active) listener.start(); }, delay);
+}
+function stopListening() {                         // abandon without sending (typing, mute, new chat)
+  if (listener.active) listener.cancel();
+  if (listening) { endListeningUi(); }
+  dropMicCard();
 }
 
 // ---------- UI wiring ----------
+let lastTap = 0;
 function talk() {
-  orb.burst(10);
-  if (synth && !synth.speaking) synth.speak(new SpeechSynthesisUtterance('')); // unlock audio on iOS
-  if (busy) return;
-  if (listening) { try { recog.stop(); } catch { /* ignore */ } return; } // stop -> onend sends
-  startListening();
+  const now = performance.now();
+  if (now - lastTap < 380) return;                 // debounce: double taps / pointer+click pairs must not start-then-stop
+  lastTap = now;
+  buzz();
+  if (synth && IOS && !synth.speaking) { try { synth.speak(new SpeechSynthesisUtterance('')); } catch { /* ignore */ } } // iOS needs speech unlocked by a tap
+  if (listening) {                                 // tap again = "I'm done": finalize and send what was heard
+    if (listener.listening) listener.stop('tap'); else listener.cancel();
+    return;
+  }
+  if (busy) { toast('One moment, Sparky is still thinking...', 1800); return; }
+  beginListening();
 }
-$('#coreBtn').addEventListener('click', talk);
-$('#micBtn').addEventListener('click', talk);
+// pointerup gives an instant response on touch; the click that follows a touch is ignored (no ghost double toggle).
+// keyboard "click" (Enter/Space) still works.
+let lastPointerTap = -1e9;
+for (const id of ['#coreBtn', '#micBtn']) {
+  const b = $(id);
+  b.addEventListener('pointerup', (e) => { if (e.button > 0) return; lastPointerTap = performance.now(); e.preventDefault(); talk(); });
+  b.addEventListener('click', (e) => { if (performance.now() - lastPointerTap < 700) { e.preventDefault(); return; } talk(); });
+}
 $('#form').addEventListener('submit', (e) => {
   e.preventDefault();
   const v = $('#input').value;
@@ -374,7 +404,8 @@ initHistory(settingsCtx);
 
 // ---------- startup ----------
 function greet() {
-  addCard('sparky', `Hi ${Mem.get().name || config.childName}! I'm Sparky. Tap my glowing core and ask me anything!`);
+  const nm = Mem.get().name;
+  addCard('sparky', `${nm ? `Hi ${nm}!` : 'Hi there!'} I'm Sparky. Tap my glowing core and ask me anything!`);
   orb.burst(12);
 }
 setMuted(muted);

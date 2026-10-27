@@ -33,7 +33,7 @@ export class Wake {
     if (r) { r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch { /* ignore */ } }
   }
   start() {
-    if (this.rec || !this.on) return;
+    if (this.rec || !this.on || !this.o.canListen()) return;   // never open the mic while a push-to-talk turn or Sparky's voice is active
     let r;
     try { r = new this.o.SR(); } catch { this.set('error', 'Could not start listening.'); return; }
     const gen = ++this.gen;

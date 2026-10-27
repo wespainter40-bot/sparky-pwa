@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DIR = process.env.DATA_DIR || path.join(root, 'data', 'sessions');
 const TZ = process.env.TIMEZONE || 'America/Chicago';
-const CHILD = process.env.CHILD_NAME || 'Pearson';
+const USER_LABEL = 'User';   // session logs name the speaker generically (no assumed person)
 fs.mkdirSync(DIR, { recursive: true });
 
 export const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -89,7 +89,7 @@ export function toMarkdown(s) {
     '',
   ];
   const body = s.messages.map((m) => {
-    const who = m.role === 'user' ? `${CHILD}${m.source === 'voice' ? ' (voice)' : ''}` : 'Sparky';
+    const who = m.role === 'user' ? `${USER_LABEL}${m.source === 'voice' ? ' (voice)' : ''}` : 'Sparky';
     return `### ${fmtTime(m.ts)} - ${who}\n${m.text}\n`;
   });
   return [...head, ...body].join('\n');

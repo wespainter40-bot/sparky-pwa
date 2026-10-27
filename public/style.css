@@ -420,3 +420,9 @@ html[data-theme="light"] .stage::before {
   background: radial-gradient(closest-side, rgba(4, 12, 9, .97) 0, rgba(4, 12, 9, .96) 58%, rgba(8, 24, 17, .8) 78%, rgba(8, 24, 17, 0) 100%);
 }
 html[data-theme="light"] .hint { color: #3d5a4a; }
+
+/* ---------- v7: push-to-talk ---------- */
+.core-hit, .mic, .send, .icon-btn { touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+.core-hit { -webkit-touch-callout: none; }
+.card.interim { opacity: .78; font-style: italic; }
+.card.interim::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; vertical-align: 1px; border-radius: 50%; background: var(--gold); animation: blink .5s ease-in-out infinite alternate; }

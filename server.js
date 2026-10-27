@@ -101,7 +101,6 @@ async function handleApi(req, res, url) {
   if (m === 'GET' && pathname === '/api/health') return sendJson(res, 200, { ok: true, providers: providerNames() });
   if (m === 'GET' && pathname === '/api/config')
     return sendJson(res, 200, {
-      childName: process.env.CHILD_NAME || 'Pearson',
       adminTokenRequired: Boolean(ADMIN_TOKEN),
       drive: { enabled: drive.status.enabled, mode: drive.status.mode, lastSync: drive.status.lastSync, lastError: drive.status.lastError },
     });
