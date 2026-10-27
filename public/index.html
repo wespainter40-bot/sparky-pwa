@@ -127,6 +127,11 @@
           <input id="rate" type="range" min="0.6" max="1.6" step="0.05">
           <div class="ends"><span>Slow</span><span>Fast</span></div>
         </div>
+        <div class="slider">
+          <label for="volume">Volume <output id="volumeVal" for="volume"></output></label>
+          <input id="volume" type="range" min="0.2" max="1" step="0.05">
+          <div class="ends"><span>Quiet</span><span>Loud</span></div>
+        </div>
         <div class="row">
           <button id="voicePreview" class="btn primary" type="button">&#9654; Preview</button>
           <button id="voiceReset" class="btn ghost" type="button">Reset</button>
@@ -175,6 +180,28 @@
           <span class="switch" aria-hidden="true"></span>
         </button>
         <p id="wakeNote" class="note">Works only while Sparky is open on screen, and only in browsers with speech recognition (Chrome, Edge, Android Chrome). iPhone and iPad Safari may not work. Off by default.</p>
+      </section>
+
+      <section class="sec" aria-labelledby="hDiag" id="diagSec">
+        <h3 id="hDiag">Voice diagnostics</h3>
+        <p class="note top">If voice is not working, these tests show what is going on. Everything stays on this device.</p>
+        <dl id="diagInfo" class="diag"></dl>
+        <div class="row wrap">
+          <button id="diagMic" class="btn" type="button">Test microphone</button>
+          <button id="diagListen" class="btn" type="button">Test listening</button>
+          <button id="diagVoice" class="btn" type="button">Test voice</button>
+        </div>
+        <div class="meterbar" aria-hidden="true"><i id="diagMeter"></i></div>
+        <p id="diagMsg" class="note" role="status" aria-live="polite">Tap a test to start.</p>
+        <label class="field" for="recLang">Listening language</label>
+        <div class="select-wrap"><select id="recLang" aria-label="Listening language"></select></div>
+        <button id="meterToggle" class="switch-row" type="button" role="switch" aria-checked="false">
+          <span class="switch-text"><b>Real microphone level on the orb</b><small>Desktop only. On some computers this can make voice stop working, so it is off by default.</small></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <h4 class="subh">Recent voice events</h4>
+        <ol id="diagLog" class="diag-log"></ol>
+        <div class="row"><button id="diagCopy" class="btn ghost" type="button">Copy log</button><button id="diagClear" class="btn ghost" type="button">Clear</button><button id="diagWake" class="btn ghost" type="button">Retry wake word</button></div>
       </section>
 
       <section class="sec" aria-labelledby="hMem">

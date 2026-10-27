@@ -20,7 +20,7 @@ export function toQuery(text) {
     .trim();
 }
 
-async function getJson(url, ms = 3000) {
+async function getJson(url, ms = 2400) {
   const res = await fetch(url, {
     signal: AbortSignal.timeout(ms),
     headers: { 'user-agent': 'SparkyKidAssistant/1.0 (personal project)' },
@@ -53,18 +53,14 @@ async function wikipedia(q) {
   };
 }
 
-/** Returns {source,title,text,url} or null. Never throws. */
-export async function lookup(text) {
+/** Returns {source,title,text,url} or null. Never throws. Both sources are asked at once and the whole lookup is capped at `capMs`
+ *  (a slow lookup must never hold up the spoken answer). DuckDuckGo wins if both answer. */
+export async function lookup(text, capMs = 2500) {
   if (!looksLikeLookup(text)) return null;
   const q = toQuery(text);
   if (!q) return null;
-  for (const fn of [duckDuckGo, wikipedia]) {
-    try {
-      const r = await fn(q);
-      if (r) return r;
-    } catch (e) {
-      console.warn(`[search] ${fn.name} failed: ${e.message}`);
-    }
-  }
-  return null;
+  const ask = (fn) => fn(q).catch((e) => { console.warn(`[search] ${fn.name} failed: ${e.message}`); return null; });
+  const both = Promise.all([ask(duckDuckGo), ask(wikipedia)]).then(([d, w]) => d || w || null);
+  const cap = new Promise((r) => setTimeout(() => r(null), capMs));
+  return Promise.race([both, cap]);
 }

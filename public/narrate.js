@@ -32,13 +32,19 @@ export class Narrator {
   start() {
     this.stop(); this.running = true; this.spoken = 0; this.t0 = Date.now(); this.gotToken = false; this.stageNow = '';
     this.say('received');
-    this.waitTimer = setInterval(() => { if (this.running && !this.gotToken) this.say('wait'); }, 3800);
+    this.waitTimer = setInterval(() => { if (this.running && !this.gotToken && this.stageNow !== 'waking') this.say('wait'); }, 3800);
   }
   stage(name) {
     if (!this.running || this.gotToken) return;
-    if (name === 'received') return;                                  // the client already said its own opening line
+    if (name === 'received') { this.stageNow = this.stageNow === 'waking' ? 'received' : this.stageNow; return; }                                  // the client already said its own opening line
     if (name === 'thinking' && this.stageNow && this.stageNow !== 'received') return;   // do not talk over 'found something'
     this.say(name);
+  }
+  /** the server is slow to answer (probably waking up): shown even when narration is off, because otherwise it just looks broken */
+  waking() {
+    if (!this.running || this.gotToken) return;
+    this.stageNow = 'waking';
+    this.o.show('Waking Sparky up... one moment!');
   }
   token() {
     if (!this.running) return;

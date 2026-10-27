@@ -1,6 +1,7 @@
 // "Hey Sparky" hands-free mode: continuous Web Speech recognition that only listens for the wake phrase.
 // Honest limits: foreground tab only, and only in browsers with SpeechRecognition (Chrome/Edge/Android Chrome; iOS Safari is unreliable).
 import { load, save } from './store.js';
+import { normLang, explain } from './listen.js';
 export const KEY = 'sparky.wake.v1';
 export const WAKE_RE = /\b(?:hey|hay|hi|okay|ok)\s*,?\s*(?:sparky|sparkie|sparkey|sparki|spark|sparkly)\b|\ba\s+(?:sparky|sparkie|sparkey)\b/i;
 export const isOn = () => !!load(KEY, {}).on;
@@ -17,12 +18,14 @@ export class Wake {
     if (!this.o.SR) { this.set('unsupported'); return false; }
     this.on = true; this.fails = 0; save(KEY, { on: true }); this.sync(); return true;
   }
+  /** diagnostics: try again right now */
+  retryNow() { this.fails = 0; clearTimeout(this.timer); this.kill(); if (this.on) this.sync(); }
   disable() { this.on = false; save(KEY, { on: false }); this.kill(); this.set('off'); }
   /** call whenever Sparky's state changes: listens only while idle (never while speaking, thinking or in a normal mic turn) */
   sync() {
     clearTimeout(this.resumeTimer);
     if (!this.on) return;
-    if (!this.o.canListen()) { this.kill(); this.set('paused'); return; }
+    if (!this.o.canListen()) { this.kill(); this.set('paused'); this.resumeTimer = setTimeout(() => this.sync(), 800); return; }   // keep checking: the reason (a guard after Sparky's voice, a diagnostics test...) passes by itself
     if (this.rec) return;
     // short delay after Sparky stops talking so the tail of its own voice is not heard
     this.resumeTimer = setTimeout(() => { if (this.on && this.o.canListen() && !this.rec) this.start(); }, 650);
@@ -37,15 +40,18 @@ export class Wake {
     let r;
     try { r = new this.o.SR(); } catch { this.set('error', 'Could not start listening.'); return; }
     const gen = ++this.gen;
-    r.continuous = true; r.interimResults = true; r.lang = (navigator.language || 'en-US'); r.maxAlternatives = 3;
+    r.continuous = true; r.interimResults = true; r.lang = normLang(this.o.lang?.() || navigator.language); r.maxAlternatives = 3;
+    this.ignoreUntil = Date.now() + 500;      // the first moments can still contain the tail of Sparky's own voice
     r.onresult = (ev) => { if (gen === this.gen) this.result(ev); };
     r.onerror = (ev) => {
       if (gen !== this.gen) return;
       const e = ev.error;
-      if (e === 'not-allowed' || e === 'service-not-allowed') { this.on = false; save(KEY, { on: false }); this.kill(); this.set('blocked'); return; }
+      if (e !== 'no-speech' && e !== 'aborted') this.o.log?.('wake', `error: ${e}`, 'warn');
+      if (e === 'not-allowed' || e === 'service-not-allowed') { this.on = false; save(KEY, { on: false }); this.kill(); this.set('blocked', explain(e, this.o.ctx?.() || {})); return; }
       if (e === 'no-speech' || e === 'aborted') return;
       this.fails++;
-      if (this.fails >= 5) { this.on = false; this.kill(); this.set('error', e === 'network' ? 'The speech service is not reachable right now.' : 'The microphone is not available.'); }
+      // never give up for good (a flaky network comes back): show what is wrong and keep trying slowly in the background
+      if (this.fails >= 4) this.set('error', explain(e, this.o.ctx?.() || {}));
     };
     r.onend = () => {
       if (gen !== this.gen) return;
@@ -53,13 +59,14 @@ export class Wake {
       if (!this.on) return;
       if (!this.o.canListen()) { this.set('paused'); return; }
       // Chrome ends continuous sessions every so often: quietly start a new one (slower after errors)
-      this.timer = setTimeout(() => this.start(), Math.min(4000, 250 + this.fails * 700));
+      this.timer = setTimeout(() => this.start(), Math.min(30000, 250 + this.fails * 1500));
     };
     this.rec = r;
-    try { r.start(); this.set('listening'); } catch { this.rec = null; this.fails++; this.timer = setTimeout(() => this.start(), 1200); }
+    try { r.start(); this.set('listening'); this.o.log?.('wake', 'listening'); } catch { this.rec = null; this.fails++; this.timer = setTimeout(() => this.start(), Math.min(30000, 1200 + this.fails * 1500)); }
   }
   result(ev) {
-    this.fails = 0;
+    if (!this.o.canListen() || Date.now() < this.ignoreUntil) return;   // Sparky's own voice (or a late result from before it spoke) never counts
+    this.fails = 0; if (this.status === 'error') this.set('listening');
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const res = ev.results[i];
       for (let a = 0; a < Math.min(res.length, 3); a++) {
@@ -77,6 +84,7 @@ export class Wake {
   fire(rest) {
     if (!this.armed && !rest && !this.rec) return;
     this.armed = false; clearTimeout(this.armTimer);
+    this.o.log?.('wake', 'heard Hey Sparky');
     this.kill(); this.set('paused');
     this.o.onWake(String(rest || '').trim());
   }

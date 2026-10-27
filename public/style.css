@@ -515,3 +515,22 @@ html[data-night="1"] #plasma { opacity: .62; }
 html[data-night="1"] #core, html[data-night="1"] #back { opacity: .55; }
 /* dialogs live in the top layer above the veil, so they get the same warm dimming as a filter */
 html[data-theme="night"] .sheet, html[data-theme="night"] .dlg { filter: sepia(.85) saturate(1.5) hue-rotate(-18deg) brightness(.72); }
+
+/* ---------- v8: voice diagnostics ---------- */
+.row.wrap { flex-wrap: wrap; }
+.row.wrap .btn { flex: 1 1 130px; }
+.diag { margin: 0 0 4px; display: grid; gap: 6px; }
+.diag div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-radius: 12px; border: 1px solid var(--hair); background: rgba(255, 255, 255, .03); font-size: .82rem; }
+.diag dt { color: var(--muted); font-weight: 700; flex: none; }
+.diag dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.diag .bad { color: #ff8a80; } .diag .good { color: var(--green-2); } .diag .warn { color: var(--gold); }
+.meterbar { height: 12px; margin: 14px 0 0; border-radius: 99px; background: rgba(255, 255, 255, .08); overflow: hidden; border: 1px solid var(--hair); }
+.meterbar i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg, var(--green), var(--gold)); transition: width .06s linear; }
+.diag-log { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 4px; font-size: .78rem; }
+.diag-log li { display: flex; gap: 8px; padding: 6px 10px; border-radius: 10px; background: rgba(255, 255, 255, .03); border: 1px solid var(--hair); }
+.diag-log time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.diag-log .k { flex: none; min-width: 42px; font-weight: 800; color: var(--green-2); text-transform: uppercase; font-size: .66rem; letter-spacing: .08em; padding-top: 2px; }
+.diag-log li.warn .m { color: var(--gold); } .diag-log li.error .m { color: #ff8a80; }
+.diag-log .m { overflow-wrap: anywhere; }
+html[data-theme="light"] .diag div, html[data-theme="light"] .diag-log li { background: rgba(255, 255, 255, .7); }
+html[data-theme="light"] .diag .bad { color: #b3261e; } html[data-theme="light"] .diag .warn { color: #8a5a00; }

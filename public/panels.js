@@ -6,6 +6,8 @@ import * as H from './history.js';
 import * as N from './night.js';
 import * as Nar from './narrate.js';
 import * as Tp from './topics.js';
+import * as VL from './voicelog.js';
+import { Listener, explain, normLang } from './listen.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, attrs = {}, ...kids) => {
@@ -24,14 +26,14 @@ function sheetBehaviour(d, closeBtn) {
 export function initSettings(ctx) {
   const dlg = $('#settingsDlg');
   sheetBehaviour(dlg, $('#settingsClose'));
-  const voiceSel = $('#voiceSel'), pitch = $('#pitch'), rate = $('#rate');
+  const voiceSel = $('#voiceSel'), pitch = $('#pitch'), rate = $('#rate'), volume = $('#volume');
   let vs = ctx.voiceSettings();
 
   const fmt = (v) => `${(+v).toFixed(2).replace(/0$/, '')}x`;
   function paintSliders() {
-    pitch.value = vs.pitch; rate.value = vs.rate;
-    $('#pitchVal').textContent = fmt(vs.pitch); $('#rateVal').textContent = fmt(vs.rate);
-    for (const [i, id] of [[pitch, 'pitch'], [rate, 'rate']]) { const [a, b] = V.LIMITS[id]; i.style.setProperty('--fill', `${((i.value - a) / (b - a)) * 100}%`); }
+    pitch.value = vs.pitch; rate.value = vs.rate; volume.value = vs.volume;
+    $('#pitchVal').textContent = fmt(vs.pitch); $('#rateVal').textContent = fmt(vs.rate); $('#volumeVal').textContent = `${Math.round(vs.volume * 100)}%`;
+    for (const [i, id] of [[pitch, 'pitch'], [rate, 'rate'], [volume, 'volume']]) { const [a, b] = V.LIMITS[id]; i.style.setProperty('--fill', `${((i.value - a) / (b - a)) * 100}%`); }
   }
   function commit(patch, { persona = false } = {}) {
     vs = { ...vs, ...patch }; if (!persona && !('persona' in patch)) vs.persona = ''; // fine-tuning leaves "custom"
@@ -75,12 +77,12 @@ export function initSettings(ctx) {
   voiceSel.addEventListener('change', () => { commit({ voiceURI: voiceSel.value }); ctx.preview(); });
   ctx.voices.onChange(paintVoices);
   let pt; // sliders: live values while dragging, a short sample when released
-  for (const [inp, key] of [[pitch, 'pitch'], [rate, 'rate']]) {
+  for (const [inp, key] of [[pitch, 'pitch'], [rate, 'rate'], [volume, 'volume']]) {
     inp.addEventListener('input', () => commit({ [key]: +inp.value }));
     inp.addEventListener('change', () => { clearTimeout(pt); pt = setTimeout(ctx.preview, 60); });
   }
   $('#voicePreview').addEventListener('click', () => ctx.preview());
-  $('#voiceReset').addEventListener('click', () => { vs = V.resetSettings(); ctx.setVoiceSettings(vs, true); paintSliders(); paintPersonas(); paintVoices(); ctx.toast('Voice reset to Friendly Sparky'); });
+  $('#voiceReset').addEventListener('click', () => { vs = { ...V.resetSettings(), lang: vs.lang }; ctx.setVoiceSettings(vs, true); paintSliders(); paintPersonas(); paintVoices(); ctx.toast('Voice reset to Friendly Sparky'); });
 
   // look
   const modes = $('#modes'), acc = $('#accents');
@@ -123,7 +125,7 @@ export function initSettings(ctx) {
     wakeBtn.setAttribute('aria-checked', String(on));
     wakeBtn.disabled = !ctx.wake.supported;
     const sub = !ctx.wake.supported ? 'Not supported in this browser'
-      : status === 'blocked' ? 'Microphone is blocked. Allow it in the browser settings, then try again.'
+      : status === 'blocked' ? (detail || 'Microphone is blocked. Allow it in the browser settings, then try again.')
       : status === 'error' ? (detail || 'Something went wrong. Try turning it off and on.')
       : on ? (status === 'listening' ? 'Listening for "Hey Sparky" right now' : 'On. Listening again when Sparky is free') : 'Say "Hey Sparky" to talk without tapping';
     $('#wakeSub').textContent = sub;
@@ -132,7 +134,109 @@ export function initSettings(ctx) {
     if (ctx.wake.on) { ctx.wake.disable(); ctx.toast('Hey Sparky is off'); } else if (ctx.wake.enable()) ctx.toast('Hey Sparky is on. Allow the microphone if asked.');
     paintWake();
   });
-  ctx.onWakeStatus.add(paintWake);
+  ctx.onWakeStatus.add((st, d) => { paintWake(st, d); paintDiag(); });
+
+  // ---- voice diagnostics ----
+  const diagInfo = $('#diagInfo'), dmsg = $('#diagMsg'), bar = $('#diagMeter');
+  const browserName = () => {
+    const ua = navigator.userAgent, b = navigator.userAgentData?.brands?.map((x) => x.brand + ' ' + x.version).filter((x) => !/Not.?A.?Brand/i.test(x)) || [];
+    const nm = navigator.brave ? 'Brave' : /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Unknown';
+    const ver = (/(?:Edg|OPR|Firefox|Chrome|Version)\/([\d.]+)/.exec(ua) || [])[1] || '';
+    const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iP(hone|ad|od)/.test(ua) ? 'iOS' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
+    return `${nm} ${ver.split('.')[0]}${os ? ' on ' + os : ''}${b.length && nm === 'Unknown' ? ' (' + b[0] + ')' : ''}`;
+  };
+  const row = (k, v, cls = '') => el('div', {}, el('dt', {}, k), el('dd', { class: cls }, v));
+  function paintDiag() {
+    if (!dlg.open) return;
+    const SRc = ctx.SR, perm = ctx.micCtx().perm, last = VL.lastInfo(), cur = ctx.voices.resolve(ctx.voiceSettings());
+    const fw = last.firstWordMs != null ? `${(last.firstWordMs / 1000).toFixed(1)} s` : null, ft = last.firstTokenMs != null ? `${(last.firstTokenMs / 1000).toFixed(1)} s` : null;
+    diagInfo.replaceChildren(
+      row('Speech recognition', SRc ? `Available (${window.SpeechRecognition ? 'SpeechRecognition' : 'webkitSpeechRecognition'})` : 'Not available in this browser', SRc ? 'good' : 'bad'),
+      row('Speech output', ctx.voices.supported ? `Available, ${ctx.voices.all.length} voice${ctx.voices.all.length === 1 ? '' : 's'}${cur ? ' (using ' + V.friendlyName(cur) + ')' : ''}` : 'Not available', ctx.voices.supported ? 'good' : 'bad'),
+      row('Microphone permission', perm || 'unknown (the browser will ask)', perm === 'granted' ? 'good' : perm === 'denied' ? 'bad' : 'warn'),
+      row('Secure page (https)', window.isSecureContext ? 'yes' : 'NO: voice needs https', window.isSecureContext ? 'good' : 'bad'),
+      row('Listening language', normLang(ctx.recLang())),
+      row('Wake word', ctx.wake.supported ? (ctx.wake.on ? ctx.wake.status : 'off') : 'not supported', ctx.wake.status === 'error' || ctx.wake.status === 'blocked' ? 'bad' : ''),
+      row('Browser', browserName()),
+      row('Last error', last.error ? `${last.error.msg} (${VL.clock(last.error.t)})` : 'none', last.error ? 'bad' : 'good'),
+      row('Last reply speed', fw ? `first words after ${fw}${ft ? ` (answer text after ${ft})` : ''}` : 'no reply yet'),
+    );
+    $('#diagLog').replaceChildren(...(VL.events().length ? VL.events().slice().reverse().map((e) => el('li', { class: e.level }, el('time', {}, VL.clock(e.t)), el('span', { class: 'k' }, e.kind), el('span', { class: 'm' }, e.msg))) : [el('li', {}, el('span', { class: 'm' }, 'Nothing yet. Try a test above or talk to Sparky.'))]));
+  }
+  VL.onChange(paintDiag);
+  ctx.refreshDiag = paintDiag;
+  const lang = $('#recLang');
+  for (const [code, name] of V.LANGS) lang.append(el('option', { value: code }, name));
+  lang.addEventListener('change', () => { commit({ lang: lang.value }, { persona: true }); paintDiag(); VL.log('listen', `language set to ${normLang(ctx.recLang())}`); });
+  $('#meterToggle').addEventListener('click', () => {
+    const on = localStorage.getItem('sparkyMeter') !== '1';
+    if (on) localStorage.setItem('sparkyMeter', '1'); else localStorage.removeItem('sparkyMeter');
+    localStorage.removeItem('sparkyNoMeter');
+    $('#meterToggle').setAttribute('aria-checked', String(on));
+  });
+  const micMsg = (e) => ({
+    NotAllowedError: 'Microphone blocked. Click the lock icon in the address bar, set Microphone to Allow, then test again.',
+    SecurityError: 'Microphone blocked. Click the lock icon in the address bar, set Microphone to Allow, then test again.',
+    NotFoundError: 'No microphone found. Plug one in or pick one in your system Sound settings.',
+    NotReadableError: 'The microphone is busy or unavailable. Close other apps that use it (Teams, Zoom, Discord) and test again.',
+    OverconstrainedError: 'The chosen microphone is not available. Pick another in your system Sound settings.',
+  }[e && e.name] || `Could not open the microphone (${(e && (e.name || e.message)) || 'unknown'}).`);
+  let stopTest = null;
+  const busyBtns = (on, except) => ['#diagMic', '#diagListen', '#diagVoice'].forEach((id) => { const b = $(id); b.disabled = on && b !== except; });
+  $('#diagMic').addEventListener('click', async () => {
+    const btn = $('#diagMic');
+    if (stopTest) return stopTest();
+    if (!navigator.mediaDevices?.getUserMedia) { dmsg.textContent = 'This browser cannot open the microphone here (it needs https).'; VL.log('mic', 'getUserMedia not available', 'error'); return; }
+    ctx.pauseVoice(); busyBtns(true, btn); dmsg.textContent = 'Opening the microphone... allow it if asked.';
+    let stream, ac, raf, timer, peak = 0;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) { const m = micMsg(e); dmsg.textContent = m; VL.log('mic', `test failed: ${e.name || e.message}`, 'error'); busyBtns(false); ctx.resumeVoice(); return; }
+    const track = stream.getAudioTracks()[0], label = track?.label || 'default microphone';
+    VL.log('mic', `opened "${label}"`);
+    const AC = window.AudioContext || window.webkitAudioContext; ac = new AC();
+    const an = ac.createAnalyser(); an.fftSize = 512; ac.createMediaStreamSource(stream).connect(an);
+    const buf = new Uint8Array(512), t0 = performance.now();
+    btn.textContent = 'Stop test'; btn.disabled = false;
+    const tick = () => {
+      an.getByteTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
+      const lv = Math.min(1, Math.sqrt(s / buf.length) * 6); peak = Math.max(peak, lv); bar.style.width = `${Math.round(lv * 100)}%`;
+      const left = Math.max(0, 8 - (performance.now() - t0) / 1000);
+      dmsg.textContent = `Say something. "${label}" is listening... ${left.toFixed(0)}s`;
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+    stopTest = () => {
+      cancelAnimationFrame(raf); clearTimeout(timer); stream.getTracks().forEach((t) => t.stop()); ac.close().catch(() => {});
+      bar.style.width = '0'; btn.textContent = 'Test microphone'; stopTest = null; busyBtns(false);
+      const pc = Math.round(peak * 100);
+      dmsg.textContent = peak > 0.08 ? `Microphone works: "${label}" (loudest ${pc}%).` : `The microphone opened but I heard almost nothing (loudest ${pc}%). It may be muted, too quiet, or not the one you speak into. Check the Windows/macOS Sound input settings.`;
+      VL.log('mic', `test ended, peak ${pc}%`, peak > 0.08 ? 'info' : 'warn'); ctx.resumeVoice();
+    };
+    timer = setTimeout(() => stopTest && stopTest(), 8000);
+  });
+  $('#diagListen').addEventListener('click', () => {
+    const btn = $('#diagListen');
+    if (btn._l) { btn._l.stop('tap'); return; }
+    if (!ctx.SR) { dmsg.textContent = explain('unsupported'); return; }
+    ctx.pauseVoice(); busyBtns(true, btn); btn.textContent = 'Stop'; dmsg.textContent = 'Say something, like "hello Sparky"...';
+    const end = () => { btn._l = null; btn.textContent = 'Test listening'; busyBtns(false); ctx.resumeVoice(); };
+    const l = new Listener({
+      SR: ctx.SR, lang: ctx.recLang, log: (k, m, lv) => VL.log(k, m, lv), ctx: ctx.micCtx,
+      onInterim: (t) => { dmsg.textContent = `Hearing: "${t}"`; },
+      onError: (code, msg) => { dmsg.textContent = msg; },
+      onDone: (text, reason) => { if (text) { dmsg.textContent = `Heard: "${text}". Listening works!`; VL.note({ heard: text }); } else if (reason !== 'error') dmsg.textContent = reason === 'nothing' ? 'The mic detected sound but no words. Try speaking more clearly or closer.' : 'Heard nothing. Check the microphone test above.'; end(); },
+    });
+    btn._l = l; l.start();
+  });
+  $('#diagVoice').addEventListener('click', () => { dmsg.textContent = 'Playing a test sentence... you should hear Sparky now.'; ctx.testVoice(); });
+  $('#diagCopy').addEventListener('click', async () => {
+    const txt = `Sparky voice log\n${browserName()}\n${VL.asText()}`;
+    try { await navigator.clipboard.writeText(txt); ctx.toast('Log copied'); } catch { ctx.toast('Could not copy. Select the text instead.'); }
+  });
+  $('#diagClear').addEventListener('click', () => VL.clear());
+  $('#diagWake').addEventListener('click', () => { if (!ctx.wake.on) { ctx.toast('Turn on Hey Sparky first (Hands-free above).'); return; } ctx.wake.retryNow(); ctx.toast('Trying the wake word again'); });
+  ctx.setDiagMsg = (m) => { dmsg.textContent = m; };
 
   // memory
   const list = $('#memList');
@@ -192,7 +296,8 @@ export function initSettings(ctx) {
 
   $('#settingsBtn').addEventListener('click', () => {
     vs = ctx.voiceSettings(); paintSliders(); paintPersonas(); paintVoices(); paintLook(); paintNight(); paintNarr(); paintWake(); paintMem(); paintTopics();
-    openDlg(dlg);
+    lang.value = vs.lang || ''; $('#meterToggle').setAttribute('aria-checked', String(localStorage.getItem('sparkyMeter') === '1'));
+    openDlg(dlg); paintDiag();
   });
   ctx.refreshSettings = () => { vs = ctx.voiceSettings(); paintSliders(); paintPersonas(); paintVoices(); paintMem(); paintTopics(); };
 }

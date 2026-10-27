@@ -2,51 +2,74 @@
 // Add a provider by pushing another openAICompatible({...}) entry into `chain`.
 const env = process.env;
 
-function openAICompatible({ name, url, key, model, headers = {}, firstTokenMs = 12000 }) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+class HttpError extends Error { constructor(status, retryAfter) { super(`HTTP ${status}`); this.status = status; this.retryAfter = retryAfter; } }
+
+// Streams plain text pieces. A "reasoning" model (Pollinations' default) first streams `delta.reasoning` for a while: those chunks are
+// NOT answer text, so the first-token timer keeps running until real `delta.content` arrives. A 429/5xx/timeout gets one quick retry
+// (`attempts`), and a provider that yields {status:'retry'} lets the caller tell the user.
+function openAICompatible({ name, url, key, model, headers = {}, firstTokenMs = 5500, retryTokenMs = 4500, attempts = 1, extraBody = {} }) {
+  async function* once(messages, opts, firstMs, state) {
+    const ctrl = new AbortController();
+    let timer = setTimeout(() => ctrl.abort(), firstMs);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}), ...headers },
+        body: JSON.stringify({ model, messages, stream: true, max_tokens: opts.maxTokens || 350, temperature: 0.7, ...extraBody }),
+      });
+      if (!res.ok) throw new HttpError(res.status, Number(res.headers.get('retry-after')) || 0);
+
+      // Some servers ignore stream:true and answer with plain JSON.
+      if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
+        const j = await res.json();
+        const text = j.choices?.[0]?.message?.content;
+        if (text) { state.started = true; yield text; }
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buf = '';
+      for await (const chunk of res.body) {
+        buf += decoder.decode(chunk, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') return;
+          try {
+            const t = JSON.parse(data).choices?.[0]?.delta?.content;
+            if (t) {
+              state.started = true;
+              clearTimeout(timer); timer = setTimeout(() => ctrl.abort(), 12000); // idle timeout between answer chunks
+              yield t;
+            }
+          } catch { /* ignore keep-alives / partial JSON */ }
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   return {
     name,
     model,
-    async *stream(messages) {
-      const ctrl = new AbortController();
-      let timer = setTimeout(() => ctrl.abort(), firstTokenMs);
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          signal: ctrl.signal,
-          headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}), ...headers },
-          body: JSON.stringify({ model, messages, stream: true, max_tokens: 350, temperature: 0.7 }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        // Some servers ignore stream:true and answer with plain JSON.
-        if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
-          const j = await res.json();
-          const text = j.choices?.[0]?.message?.content;
-          if (text) yield text;
+    async *stream(messages, opts = {}) {
+      for (let attempt = 1; ; attempt++) {
+        const state = { started: false };
+        try {
+          yield* once(messages, opts, attempt === 1 ? firstTokenMs : retryTokenMs, state);
           return;
+        } catch (e) {
+          const retryable = e instanceof HttpError ? (e.status === 429 || e.status >= 500) : (e.name === 'AbortError' || e.name === 'TimeoutError' || /abort|fetch failed|terminated/i.test(e.message));
+          if (state.started || attempt >= attempts || !retryable) throw e;
+          console.warn(`[llm] ${name} attempt ${attempt} failed (${e.message}), retrying`);
+          yield { status: 'retry' };
+          await sleep(Math.min(2000, (e.retryAfter || 0) * 1000 || 600));
         }
-
-        const decoder = new TextDecoder();
-        let buf = '';
-        for await (const chunk of res.body) {
-          clearTimeout(timer);
-          timer = setTimeout(() => ctrl.abort(), 15000); // idle timeout between chunks
-          buf += decoder.decode(chunk, { stream: true });
-          let nl;
-          while ((nl = buf.indexOf('\n')) >= 0) {
-            const line = buf.slice(0, nl).trim();
-            buf = buf.slice(nl + 1);
-            if (!line.startsWith('data:')) continue;
-            const data = line.slice(5).trim();
-            if (data === '[DONE]') return;
-            try {
-              const t = JSON.parse(data).choices?.[0]?.delta?.content;
-              if (t) yield t;
-            } catch { /* ignore keep-alives / partial JSON */ }
-          }
-        }
-      } finally {
-        clearTimeout(timer);
       }
     },
   };
@@ -78,8 +101,10 @@ export function buildChain() {
     }));
   chain.push(openAICompatible({
     name: 'pollinations',
-    url: 'https://text.pollinations.ai/openai',
+    url: env.POLLINATIONS_URL || 'https://text.pollinations.ai/openai',
     model: env.POLLINATIONS_MODEL || 'openai',
+    attempts: 2,                               // the free anonymous tier answers 429 / stalls now and then: one quick retry
+    extraBody: { reasoning_effort: 'low' },    // its default model is a reasoning model; 'low' cuts the silent thinking time a lot
   }));
   return chain;
 }
@@ -101,15 +126,16 @@ function localReply(userText) {
  * Yields {type:'meta', provider} once, then {type:'token', text} pieces.
  * Falls through the chain until one provider produces output.
  */
-export async function* streamReply(messages) {
+export async function* streamReply(messages, opts = {}) {
   let tried = 0;
   for (const p of chain) {
     let started = false;
     if (tried++) yield { type: 'status', stage: 'fallback', provider: p.name }; // previous provider failed: trying the next one
     try {
-      for await (const text of p.stream(messages)) {
+      for await (const item of p.stream(messages, opts)) {
+        if (typeof item === 'object') { yield { type: 'status', stage: item.status, provider: p.name }; continue; }
         if (!started) { started = true; yield { type: 'meta', provider: p.name, model: p.model }; }
-        yield { type: 'token', text };
+        yield { type: 'token', text: item };
       }
       if (started) return;
     } catch (e) {

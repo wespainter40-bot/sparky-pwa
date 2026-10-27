@@ -1,8 +1,9 @@
 // Voice picker logic: device voice list (async-safe), friendly names, personas, saved settings (sparky.voice.v1).
 import { load, save, drop } from './store.js';
 export const KEY = 'sparky.voice.v1';
-export const DEFAULTS = { voiceURI: '', pitch: 1.15, rate: 1, persona: 'friendly' };
-export const LIMITS = { pitch: [0.5, 2], rate: [0.6, 1.6] };
+export const DEFAULTS = { voiceURI: '', pitch: 1.15, rate: 1, persona: 'friendly', volume: 1, lang: '' };   // lang '' = the device language
+export const LIMITS = { pitch: [0.5, 2], rate: [0.6, 1.6], volume: [0.2, 1] };
+export const LANGS = [['', 'Automatic (device language)'], ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['en-AU', 'English (Australia)'], ['en-CA', 'English (Canada)'], ['en-IN', 'English (India)'], ['es-US', 'Spanish (United States)'], ['es-ES', 'Spanish (Spain)'], ['fr-FR', 'French'], ['de-DE', 'German']];
 export const PERSONAS = [
   { id: 'friendly', label: 'Friendly Sparky', icon: '😊', note: 'Bright and cheerful', pitch: 1.15, rate: 1.0, prefer: /natural.*(aria|jenny|ava)|aria|jenny|samantha|google us english|\bava\b|zira|allison/i },
   { id: 'robot', label: 'Robot', icon: '🤖', note: 'Deep and slow', pitch: 0.6, rate: 0.85, prefer: /david|\bmark\b|\balex\b|fred|daniel|\bguy\b|ryan|google uk english male|\bmale\b/i },
@@ -14,7 +15,8 @@ export const keyOf = (v) => v.voiceURI || `${v.name}|${v.lang}`;
 
 export function loadSettings() {
   const s = { ...DEFAULTS, ...load(KEY, {}) };
-  s.pitch = clamp(s.pitch, LIMITS.pitch); s.rate = clamp(s.rate, LIMITS.rate);
+  s.pitch = clamp(s.pitch, LIMITS.pitch); s.rate = clamp(s.rate, LIMITS.rate); s.volume = clamp(s.volume, LIMITS.volume);
+  if (!LANGS.some(([c]) => c === s.lang)) s.lang = '';
   if (!PERSONAS.some((p) => p.id === s.persona)) s.persona = '';
   return s;
 }
