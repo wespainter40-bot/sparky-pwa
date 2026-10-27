@@ -1,5 +1,5 @@
 // Sparky service worker: precache the app shell, serve it offline. API calls are never cached.
-const CACHE = 'sparky-shell-v3';
+const CACHE = 'sparky-shell-v4';
 const SHELL = [
   '/', '/index.html', '/style.css', '/app.js', '/orb.js', '/manifest.json',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png',
