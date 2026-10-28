@@ -20,7 +20,7 @@ export function toQuery(text) {
     .trim();
 }
 
-async function getJson(url, ms = 2400) {
+async function getJson(url, ms = 1100) {
   const res = await fetch(url, {
     signal: AbortSignal.timeout(ms),
     headers: { 'user-agent': 'SparkyKidAssistant/1.0 (personal project)' },
@@ -53,14 +53,43 @@ async function wikipedia(q) {
   };
 }
 
-/** Returns {source,title,text,url} or null. Never throws. Both sources are asked at once and the whole lookup is capped at `capMs`
- *  (a slow lookup must never hold up the spoken answer). DuckDuckGo wins if both answer. */
-export async function lookup(text, capMs = 2500) {
+// Circuit breaker for DuckDuckGo: it times out from Render most of the time, so after 2 failures in a row it is skipped for 10 minutes.
+export const LOOKUP_CAP_MS = 1200;
+const BREAKER = { fails: 0, until: 0, threshold: 2, pauseMs: 10 * 60 * 1000 };
+export const breakerState = () => ({ fails: BREAKER.fails, open: Date.now() < BREAKER.until, until: BREAKER.until });
+export const resetBreaker = () => { BREAKER.fails = 0; BREAKER.until = 0; };
+const SOURCES = { duckDuckGo, wikipedia };
+export const _setSources = (o) => { Object.assign(SOURCES, o); };   // tests only
+
+/** Returns {source,title,text,url} or null. Never throws. Wikipedia and DuckDuckGo are asked at once; the first one with a useful answer
+ *  wins (the slower one is not waited for) and the whole lookup is capped at `capMs`, so a slow lookup never holds up the spoken answer.
+ *  DuckDuckGo is skipped while its breaker is open. */
+export async function lookup(text, capMs = LOOKUP_CAP_MS) {
   if (!looksLikeLookup(text)) return null;
   const q = toQuery(text);
   if (!q) return null;
-  const ask = (fn) => fn(q).catch((e) => { console.warn(`[search] ${fn.name} failed: ${e.message}`); return null; });
-  const both = Promise.all([ask(duckDuckGo), ask(wikipedia)]).then(([d, w]) => d || w || null);
-  const cap = new Promise((r) => setTimeout(() => r(null), capMs));
-  return Promise.race([both, cap]);
+  const useDdg = Date.now() >= BREAKER.until;
+  return new Promise((resolve) => {
+    let pending = 0, done = false, timer;
+    const finish = (v) => { if (done) return; done = true; clearTimeout(timer); resolve(v); };
+    const run = (name, isDdg) => {
+      pending++;
+      Promise.resolve().then(() => SOURCES[name](q)).then(
+        (r) => {
+          if (isDdg) BREAKER.fails = 0;
+          if (r) finish(r); else if (--pending === 0) finish(null);
+        },
+        (e) => {
+          console.warn(`[search] ${name} failed: ${e.message}`);
+          if (isDdg && ++BREAKER.fails >= BREAKER.threshold && Date.now() >= BREAKER.until) {
+            BREAKER.until = Date.now() + BREAKER.pauseMs;
+            console.warn(`[search] duckDuckGo failed ${BREAKER.fails}x in a row: skipping it for ${BREAKER.pauseMs / 60000} min`);
+          }
+          if (--pending === 0) finish(null);
+        });
+    };
+    run('wikipedia', false);
+    if (useDdg) run('duckDuckGo', true);
+    timer = setTimeout(() => finish(null), capMs);
+  });
 }
