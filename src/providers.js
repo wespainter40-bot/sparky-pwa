@@ -77,13 +77,21 @@ function openAICompatible({ name, url, key, model, headers = {}, firstTokenMs = 
 
 export function buildChain() {
   const chain = [];
-  if (env.GROQ_API_KEY)
-    chain.push(openAICompatible({
-      name: 'groq',
+  if (env.GROQ_API_KEY) {
+    // Groq's current ids (checked against /models): llama-3.1-8b-instant / llama-3.3-70b are no longer listed for this key.
+    // gpt-oss-120b answers in ~0.4 s here; gpt-oss-20b (~0.2 s) is the quick second try. Both are reasoning models, so keep effort low.
+    const groq = (name, model) => openAICompatible({
+      name,
       url: 'https://api.groq.com/openai/v1/chat/completions',
       key: env.GROQ_API_KEY,
-      model: env.GROQ_MODEL || 'llama-3.1-8b-instant',
-    }));
+      model,
+      firstTokenMs: 4500,
+      attempts: 2,
+      extraBody: { reasoning_effort: 'low' },
+    });
+    chain.push(groq('groq', env.GROQ_MODEL || 'openai/gpt-oss-120b'));
+    if (!env.GROQ_MODEL) chain.push(groq('groq-fast', 'openai/gpt-oss-20b'));
+  }
   if (env.OPENROUTER_API_KEY)
     chain.push(openAICompatible({
       name: 'openrouter',
